@@ -1,0 +1,30 @@
+{
+  "permissions": {
+    "allow": [
+      "WebSearch",
+      "Bash(curl:*)",
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "Bash(flutter pub:*)",
+      "Bash(where flutter)",
+      "Read(//c/Users/User/flutter/bin/**)",
+      "Read(//c/flutter/bin/**)",
+      "Read(//c/Users/User/**)",
+      "Bash(cmd.exe:*)",
+      "Read(//c/AI/projects/mypms/smartbayu/$LOCALAPPDATA/**)",
+      "Read(//c/AI/projects/mypms/smartbayu/$HOME/development/**)",
+      "Read(//c/src/flutter/bin/**)",
+      "Read(//d/flutter/bin/**)",
+      "Read(//c/AI/projects/mypms/smartbayu/$LOCALAPPDATA/Pub/**)",
+      "Read(//c/tools/flutter/bin/**)",
+      "Read(//c/dev/flutter/bin/**)",
+      "Bash(/c/src/flutter/bin/flutter pub:*)",
+      "Bash(export:*)",
+      "Bash(powershell.exe:*)",
+      "Bash(mkdir:*)",
+      "Bash(unzip:*)",
+      "Bash(/c/flutter/bin/flutter analyze:*)",
+      "Bash(/c/flutter/bin/flutter build:*)"
+    ]
+  }
+}

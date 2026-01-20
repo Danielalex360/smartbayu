@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "711197187411",
+    "project_id": "smartbayu-2d2d5",
+    "storage_bucket": "smartbayu-2d2d5.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:711197187411:android:03be20629f3e16eb0cd5a6",
+        "android_client_info": {
+          "package_name": "my.bayulestari.smartbayu"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyC1836QjacKA54g-2Rzenn4aLGzWMtuEMw"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
