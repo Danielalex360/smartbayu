@@ -1,10 +1,18 @@
 // lib/features/hr/hr_staff_form_page.dart
-import 'dart:io';
+import 'dart:math';
+import 'dart:typed_data';
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 import '../../services/supabase_service.dart';
+
+String _generateSecurePassword({int length = 16}) {
+  const chars = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!@#\$%^&*';
+  final rng = Random.secure();
+  return List.generate(length, (_) => chars[rng.nextInt(chars.length)]).join();
+}
 
 class HrStaffFormPage extends StatefulWidget {
   const HrStaffFormPage({
@@ -35,18 +43,23 @@ class _HrStaffFormPageState extends State<HrStaffFormPage> {
   String _status = 'active'; // 'active' / 'inactive'
   DateTime? _joinDate;
 
-  String _employmentType = 'Full-time';
+  String _employmentType = 'full_time';
   static const _employmentTypeOptions = [
-    'Full-time',
-    'Part-time',
-    'Contract',
-    'Intern',
+    'full_time',
+    'part_time',
+    'contract',
   ];
+  static const _employmentTypeLabels = {
+    'full_time': 'Full-time',
+    'part_time': 'Part-time',
+    'contract': 'Contract',
+  };
 
   bool _saving = false;
 
   String? _photoUrl; // existing photo
-  File? _pickedImageFile;
+  Uint8List? _pickedImageBytes;
+  String? _pickedImagePath;
 
   static const _roleOptions = ['staff', 'hr'];
   static const _statusOptions = ['active', 'inactive'];
@@ -116,8 +129,10 @@ class _HrStaffFormPageState extends State<HrStaffFormPage> {
       imageQuality: 80,
     );
     if (img == null) return;
+    final bytes = await img.readAsBytes();
     setState(() {
-      _pickedImageFile = File(img.path);
+      _pickedImageBytes = bytes;
+      _pickedImagePath = img.path;
     });
   }
 
@@ -136,10 +151,10 @@ class _HrStaffFormPageState extends State<HrStaffFormPage> {
   }
 
   Future<String?> _uploadAvatar(String staffId) async {
-    if (_pickedImageFile == null) return _photoUrl;
+    if (_pickedImageBytes == null) return _photoUrl;
 
     try {
-      final bytes = await _pickedImageFile!.readAsBytes();
+      final bytes = _pickedImageBytes!;
       final path = 'profile_photos/$staffId.jpg';
 
       await Supabase.instance.client.storage
@@ -210,12 +225,14 @@ class _HrStaffFormPageState extends State<HrStaffFormPage> {
         final bool isActive = _status == 'active';
         final email = _emailCtrl.text.trim();
 
-        // 1) Sign up user in Supabase Auth (default password 123456)
+        // 1) Sign up user in Supabase Auth with secure random password
+        //    Staff resets via email on first login
+        final tempPassword = _generateSecurePassword();
         AuthResponse authResponse;
         try {
           authResponse = await supabase.auth.signUp(
             email: email,
-            password: '123456',
+            password: tempPassword,
           );
         } on AuthException catch (e) {
           String msg = 'Failed to create staff account.';
@@ -267,7 +284,7 @@ class _HrStaffFormPageState extends State<HrStaffFormPage> {
         final newStaffId = insertResult['id'] as String;
 
         // 3) Upload avatar if picked
-        if (_pickedImageFile != null) {
+        if (_pickedImageBytes != null) {
           final photoUrl = await _uploadAvatar(newStaffId);
           if (photoUrl != null && photoUrl.isNotEmpty) {
             await supabase
@@ -280,13 +297,22 @@ class _HrStaffFormPageState extends State<HrStaffFormPage> {
         // 4) Sign back in as the HR user (signUp logs out the current session)
         // Re-authenticate as the current HR user
         await SupabaseService.instance.loadUserContext();
+
+        // 5) Send password reset email so staff sets their own password
+        try {
+          await supabase.auth.resetPasswordForEmail(email);
+        } catch (_) {
+          // Non-blocking — staff can always use "Forgot password" later
+        }
       }
 
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text(
-            widget.isEdit ? 'Staff updated.' : 'New staff added.',
+            widget.isEdit
+                ? 'Staff updated.'
+                : 'New staff added. Password reset email sent to ${_emailCtrl.text.trim()}.',
           ),
         ),
       );
@@ -316,12 +342,12 @@ class _HrStaffFormPageState extends State<HrStaffFormPage> {
               CircleAvatar(
                 radius: 40,
                 backgroundColor: Colors.blueGrey.shade100,
-                backgroundImage: _pickedImageFile != null
-                    ? FileImage(_pickedImageFile!) as ImageProvider
+                backgroundImage: _pickedImageBytes != null
+                    ? MemoryImage(_pickedImageBytes!) as ImageProvider
                     : (_photoUrl != null && _photoUrl!.isNotEmpty)
                     ? NetworkImage(_photoUrl!)
                     : null,
-                child: (_pickedImageFile == null &&
+                child: (_pickedImageBytes == null &&
                     (_photoUrl == null || _photoUrl!.isEmpty))
                     ? const Icon(
                   Icons.person,
@@ -510,7 +536,7 @@ class _HrStaffFormPageState extends State<HrStaffFormPage> {
                           .map(
                             (e) => DropdownMenuItem<String>(
                           value: e,
-                          child: Text(e),
+                          child: Text(_employmentTypeLabels[e] ?? e),
                         ),
                       )
                           .toList(),

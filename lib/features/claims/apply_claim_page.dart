@@ -1,5 +1,7 @@
 // lib/features/claims/apply_claim_page.dart
+import 'dart:typed_data';
 import 'package:flutter/material.dart';
+import 'package:image_picker/image_picker.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 import '../../services/notification_service.dart';
@@ -20,6 +22,7 @@ class _ApplyClaimPageState extends State<ApplyClaimPage> {
 
   DateTime? _selectedDate;
   String _claimType = 'Meal';
+  Uint8List? _receiptBytes;
 
   bool _saving = false;
 
@@ -75,6 +78,24 @@ class _ApplyClaimPageState extends State<ApplyClaimPage> {
         _selectedDate!.day,
       ).toIso8601String().substring(0, 10);
 
+      // Upload receipt if picked
+      String? receiptUrl;
+      if (_receiptBytes != null) {
+        try {
+          final bytes = _receiptBytes!;
+          final path = 'receipts/$staffId/${DateTime.now().millisecondsSinceEpoch}.jpg';
+          await Supabase.instance.client.storage
+              .from('smartbayu')
+              .uploadBinary(path, bytes,
+                  fileOptions: const FileOptions(contentType: 'image/jpeg', upsert: true));
+          receiptUrl = Supabase.instance.client.storage
+              .from('smartbayu')
+              .getPublicUrl(path);
+        } catch (e) {
+          debugPrint('Receipt upload failed: $e');
+        }
+      }
+
       // Insert into staff_claims table
       final inserted = await Supabase.instance.client
           .from('staff_claims')
@@ -86,6 +107,7 @@ class _ApplyClaimPageState extends State<ApplyClaimPage> {
             'amount': amount,
             'description': _noteCtrl.text.trim(),
             'status': 'pending',
+            if (receiptUrl != null) 'receipt_url': receiptUrl,
           })
           .select('id')
           .single();
@@ -375,6 +397,58 @@ class _ApplyClaimPageState extends State<ApplyClaimPage> {
                         borderRadius: BorderRadius.circular(14),
                         borderSide: BorderSide.none,
                       ),
+                    ),
+                  ),
+
+                  const SizedBox(height: 14),
+
+                  // Receipt upload
+                  const Text(
+                    'Receipt (optional)',
+                    style: TextStyle(
+                      fontWeight: FontWeight.w600,
+                      fontSize: 13,
+                    ),
+                  ),
+                  const SizedBox(height: 6),
+                  GestureDetector(
+                    onTap: () async {
+                      final img = await ImagePicker().pickImage(
+                        source: ImageSource.camera,
+                        imageQuality: 80,
+                      );
+                      if (img != null) {
+                        final bytes = await img.readAsBytes();
+                        setState(() => _receiptBytes = bytes);
+                      }
+                    },
+                    child: Container(
+                      width: double.infinity,
+                      height: 120,
+                      decoration: BoxDecoration(
+                        color: Colors.white,
+                        borderRadius: BorderRadius.circular(14),
+                        border: Border.all(
+                          color: _receiptBytes != null
+                              ? const Color(0xFF22C55E)
+                              : Colors.grey.shade300,
+                          width: _receiptBytes != null ? 2 : 1,
+                        ),
+                      ),
+                      child: _receiptBytes != null
+                          ? ClipRRect(
+                              borderRadius: BorderRadius.circular(13),
+                              child: Image.memory(_receiptBytes!, fit: BoxFit.cover),
+                            )
+                          : const Column(
+                              mainAxisAlignment: MainAxisAlignment.center,
+                              children: [
+                                Icon(Icons.camera_alt_rounded, size: 32, color: Colors.grey),
+                                SizedBox(height: 6),
+                                Text('Tap to take receipt photo',
+                                    style: TextStyle(color: Colors.grey, fontSize: 13)),
+                              ],
+                            ),
                     ),
                   ),
 

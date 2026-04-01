@@ -1,5 +1,5 @@
 // lib/features/profile/edit_profile_page.dart
-import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
@@ -31,7 +31,7 @@ class _EditProfilePageState extends State<EditProfilePage> {
 
   String? _employmentType;
   String? _photoUrl; // existing url
-  File? _pickedImage;
+  Uint8List? _pickedBytes;
 
   bool _saving = false;
 
@@ -79,17 +79,18 @@ class _EditProfilePageState extends State<EditProfilePage> {
     );
     if (xfile == null) return;
 
+    final bytes = await xfile.readAsBytes();
     setState(() {
-      _pickedImage = File(xfile.path);
+      _pickedBytes = bytes;
     });
   }
 
   Future<String?> _uploadPhotoIfNeeded() async {
-    if (_pickedImage == null) return _photoUrl;
+    if (_pickedBytes == null) return _photoUrl;
 
     final storage = Supabase.instance.client.storage.from('smartbayu');
     final filePath = 'profile-photos/${widget.uid}.jpg';
-    final bytes = await _pickedImage!.readAsBytes();
+    final bytes = _pickedBytes!;
 
     // Upload (upsert to overwrite existing)
     await storage.uploadBinary(
@@ -149,10 +150,10 @@ class _EditProfilePageState extends State<EditProfilePage> {
 
   @override
   Widget build(BuildContext context) {
-    final currentPhotoWidget = _pickedImage != null
+    final currentPhotoWidget = _pickedBytes != null
         ? CircleAvatar(
       radius: 32,
-      backgroundImage: FileImage(_pickedImage!),
+      backgroundImage: MemoryImage(_pickedBytes!),
     )
         : CircleAvatar(
       radius: 32,

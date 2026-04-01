@@ -132,6 +132,14 @@ class AttendanceService {
     final workMins = workMinutesFromMaps(punches);
     hoursWorked = workMins / 60.0;
 
+    // Update staff.last_in / last_out for home dashboard
+    if (type == PunchType.checkin && firstIn != null) {
+      await _db.from('staff').update({'last_in': firstIn}).eq('id', staffId);
+    }
+    if (type == PunchType.checkout && lastOut != null) {
+      await _db.from('staff').update({'last_out': lastOut}).eq('id', staffId);
+    }
+
     // Upsert attendance record
     await _db.from('attendance').upsert({
       'staff_id': staffId,

@@ -16,10 +16,50 @@ class _ApplyLeavePageState extends State<ApplyLeavePage> {
   final _formKey = GlobalKey<FormState>();
   final _reasonController = TextEditingController();
 
-  String _leaveType = 'Annual Leave';
+  String _leaveType = 'Annual';
   DateTime? _startDate;
   DateTime? _endDate;
   bool _submitting = false;
+  Map<String, dynamic>? _balance;
+  List<Map<String, dynamic>> _leaveTypes = [];
+
+  @override
+  void initState() {
+    super.initState();
+    _loadLeaveTypes();
+    _loadBalance();
+  }
+
+  Future<void> _loadLeaveTypes() async {
+    final svc = SupabaseService.instance;
+    if (svc.companyId == null) return;
+    try {
+      // Try leave_types table first (MyPMS schema)
+      final rows = await Supabase.instance.client
+          .from('leave_types')
+          .select('id, name')
+          .eq('property_id', svc.companyId!)
+          .order('name');
+      if (mounted && (rows as List).isNotEmpty) {
+        setState(() => _leaveTypes = List<Map<String, dynamic>>.from(rows));
+        _leaveType = _leaveTypes.first['name'] as String;
+      }
+    } catch (_) {
+      // Table may not exist — fall back to defaults
+    }
+  }
+
+  Future<void> _loadBalance() async {
+    final svc = SupabaseService.instance;
+    if (svc.staffId == null) return;
+    final row = await Supabase.instance.client
+        .from('leave_balances')
+        .select()
+        .eq('staff_id', svc.staffId!)
+        .eq('year', DateTime.now().year)
+        .maybeSingle();
+    if (mounted) setState(() => _balance = row);
+  }
 
   @override
   void dispose() {
@@ -337,30 +377,14 @@ class _ApplyLeavePageState extends State<ApplyLeavePage> {
                         spacing: 8,
                         runSpacing: 8,
                         children: [
-                          _LeaveTypeChip(
-                            label: 'Annual Leave',
-                            isSelected: _leaveType == 'Annual Leave',
-                            onTap: () =>
-                                setState(() => _leaveType = 'Annual Leave'),
-                          ),
-                          _LeaveTypeChip(
-                            label: 'Sick Leave',
-                            isSelected: _leaveType == 'Sick Leave',
-                            onTap: () =>
-                                setState(() => _leaveType = 'Sick Leave'),
-                          ),
-                          _LeaveTypeChip(
-                            label: 'Emergency Leave',
-                            isSelected: _leaveType == 'Emergency Leave',
-                            onTap: () =>
-                                setState(() => _leaveType = 'Emergency Leave'),
-                          ),
-                          _LeaveTypeChip(
-                            label: 'Unpaid Leave',
-                            isSelected: _leaveType == 'Unpaid Leave',
-                            onTap: () =>
-                                setState(() => _leaveType = 'Unpaid Leave'),
-                          ),
+                          for (final type in _leaveTypes.isNotEmpty
+                              ? _leaveTypes.map((t) => t['name'] as String).toList()
+                              : ['Annual', 'Sick', 'Emergency', 'Unpaid'])
+                            _LeaveTypeChip(
+                              label: '$type${_balance != null ? ' (${(_balance![type.toLowerCase()] ?? '-')})' : ''}',
+                              isSelected: _leaveType == type,
+                              onTap: () => setState(() => _leaveType = type),
+                            ),
                         ],
                       ),
 

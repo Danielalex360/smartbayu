@@ -121,11 +121,31 @@ class _HrCreatePayslipPageState extends State<HrCreatePayslipPage> {
     setState(() => _saving = true);
 
     try {
+      // Derive period_start and period_end from month label (e.g. "March 2026")
+      String? periodStart;
+      String? periodEnd;
+      try {
+        final parts = monthLabel.split(' ');
+        if (parts.length == 2) {
+          const months = ['january','february','march','april','may','june',
+            'july','august','september','october','november','december'];
+          final mi = months.indexOf(parts[0].toLowerCase()) + 1;
+          final yr = int.parse(parts[1]);
+          if (mi > 0) {
+            periodStart = '$yr-${mi.toString().padLeft(2, '0')}-01';
+            final lastDay = DateTime(yr, mi + 1, 0).day;
+            periodEnd = '$yr-${mi.toString().padLeft(2, '0')}-$lastDay';
+          }
+        }
+      } catch (_) {}
+
       // 1) Insert payslip into Supabase
       await Supabase.instance.client.from('payslips').insert({
         'staff_id': _selectedStaffId,
         'company_id': companyId,
         'month_label': monthLabel,
+        if (periodStart != null) 'period_start': periodStart,
+        if (periodEnd != null) 'period_end': periodEnd,
         'basic_salary': basic,
         'total_allowances': allowance,
         'allowances': {'overtime': overtime},

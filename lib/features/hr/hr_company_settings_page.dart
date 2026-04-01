@@ -1,6 +1,4 @@
 // lib/features/hr/hr_company_settings_page.dart
-import 'dart:io';
-
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
@@ -84,8 +82,7 @@ class _HrCompanySettingsPageState extends State<HrCompanySettingsPage> {
     setState(() => _saving = true);
 
     try {
-      final file = File(shot.path);
-      final bytes = await file.readAsBytes();
+      final bytes = await shot.readAsBytes();
       final path = 'company/logo_${DateTime.now().millisecondsSinceEpoch}.jpg';
 
       await Supabase.instance.client.storage

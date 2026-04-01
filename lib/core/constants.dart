@@ -1,8 +1,13 @@
 class SmartBayu {
-  // ====== SUPABASE ======
-  static const supabaseUrl = 'https://ddpvuxiqxqjrzwharnha.supabase.co';
-  static const supabaseAnonKey =
-      'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImRkcHZ1eGlxeHFqcnp3aGFybmhhIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjkzMjQwMzYsImV4cCI6MjA4NDkwMDAzNn0.ymXkqKgXlB1RQSZKri7uVlx1a--3-mu_Wv4KYkgXTc4';
+  // ====== SUPABASE (from --dart-define or fallback) ======
+  static const supabaseUrl = String.fromEnvironment(
+    'SUPABASE_URL',
+    defaultValue: 'https://ddpvuxiqxqjrzwharnha.supabase.co',
+  );
+  static const supabaseAnonKey = String.fromEnvironment(
+    'SUPABASE_ANON_KEY',
+    defaultValue: 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImRkcHZ1eGlxeHFqcnp3aGFybmhhIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjkzMjQwMzYsImV4cCI6MjA4NDkwMDAzNn0.ymXkqKgXlB1RQSZKri7uVlx1a--3-mu_Wv4KYkgXTc4',
+  );
 
   // ====== FACE VERIFICATION (on-device) ======
   static const faceModelPath = 'assets/models/mobilefacenet.tflite';

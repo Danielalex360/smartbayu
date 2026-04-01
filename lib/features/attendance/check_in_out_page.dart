@@ -2,6 +2,7 @@
 import 'dart:async';
 import 'dart:io';
 
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:image_picker/image_picker.dart';
@@ -12,7 +13,8 @@ import '../../core/constants.dart';
 import '../../models/attendance_models.dart';
 import '../../services/attendance_service.dart';
 import '../../services/supabase_service.dart';
-import '../../services/face_verification_service.dart';
+import '../../services/face_service.dart';
+import '../../services/company_service.dart';
 
 /// Set true to skip geofence + face checks (dev mode)
 const bool kTestMode = false;
@@ -35,12 +37,15 @@ class _CheckInOutPageState extends State<CheckInOutPage> {
   DateTime _now = DateTime.now();
   late Timer _clock;
 
-  // --- Location ---
+  // --- Location (reads from CompanyService, falls back to constants) ---
   bool _locPermOk = false;
   Position? _pos;
   double? _distance;
   double? _accuracy;
-  bool get _inside => (_distance ?? 9999) <= SmartBayu.geofenceMeters;
+  double get _geofenceLat => CompanyService.instance.config.geofenceLat;
+  double get _geofenceLng => CompanyService.instance.config.geofenceLng;
+  int get _geofenceRadius => CompanyService.instance.config.geofenceMeters;
+  bool get _inside => (_distance ?? 9999) <= _geofenceRadius;
 
   // --- Face ---
   bool _faceOk = false;
@@ -60,7 +65,7 @@ class _CheckInOutPageState extends State<CheckInOutPage> {
 
   // --- Google Maps ---
   GoogleMapController? _map;
-  static const _site = LatLng(SmartBayu.resortLat, SmartBayu.resortLng);
+  LatLng get _site => LatLng(_geofenceLat, _geofenceLng);
   LatLng? _me;
 
   Set<Marker> get _markers {
@@ -86,7 +91,7 @@ class _CheckInOutPageState extends State<CheckInOutPage> {
         Circle(
           circleId: const CircleId('geo'),
           center: _site,
-          radius: SmartBayu.geofenceMeters.toDouble(),
+          radius: _geofenceRadius.toDouble(),
           fillColor: Colors.teal.withValues(alpha: 0.12),
           strokeColor: Colors.teal.withValues(alpha: 0.40),
           strokeWidth: 2,
@@ -163,8 +168,8 @@ class _CheckInOutPageState extends State<CheckInOutPage> {
     final d = Geolocator.distanceBetween(
       position.latitude,
       position.longitude,
-      SmartBayu.resortLat,
-      SmartBayu.resortLng,
+      _geofenceLat,
+      _geofenceLng,
     );
 
     setState(() {
@@ -176,7 +181,7 @@ class _CheckInOutPageState extends State<CheckInOutPage> {
 
       if (!_inside && !kTestMode) {
         _hint =
-            'You are ${d.toStringAsFixed(1)} m from site (required <= ${SmartBayu.geofenceMeters} m).';
+            'You are ${d.toStringAsFixed(1)} m from site (required <= $_geofenceRadius m).';
       } else if (!_isAccurateEnough() && !kTestMode) {
         _hint =
             'Accuracy too low: ${position.accuracy.toStringAsFixed(0)} m (required <= ${kRequiredAccuracyMeters.toStringAsFixed(0)} m).';
@@ -210,7 +215,7 @@ class _CheckInOutPageState extends State<CheckInOutPage> {
     if (kTestMode) return true;
     return _locPermOk &&
         _pos != null &&
-        (_distance ?? 9999) <= SmartBayu.geofenceMeters &&
+        (_distance ?? 9999) <= _geofenceRadius &&
         _isAccurateEnough();
   }
 
@@ -459,6 +464,7 @@ class _CheckInOutPageState extends State<CheckInOutPage> {
               markers: _markers,
               circles: _circles,
               site: _site,
+              radiusMeters: _geofenceRadius,
               onMapCreated: (c) => _map = c,
             ),
 
@@ -854,6 +860,7 @@ class _GeofenceCard extends StatelessWidget {
     required this.markers,
     required this.circles,
     required this.site,
+    required this.radiusMeters,
     required this.onMapCreated,
   });
 
@@ -863,6 +870,7 @@ class _GeofenceCard extends StatelessWidget {
   final Set<Marker> markers;
   final Set<Circle> circles;
   final LatLng site;
+  final int radiusMeters;
   final void Function(GoogleMapController) onMapCreated;
 
   @override
@@ -887,7 +895,7 @@ class _GeofenceCard extends StatelessWidget {
                     const Text('Geofence',
                         style: TextStyle(fontWeight: FontWeight.w800)),
                     const SizedBox(height: 2),
-                    Text('Radius ${SmartBayu.geofenceMeters} m',
+                    Text('Radius $radiusMeters m',
                         style: const TextStyle(color: Colors.black54)),
                   ],
                 ),

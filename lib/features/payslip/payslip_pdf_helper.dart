@@ -7,6 +7,7 @@ import 'package:pdf/widgets.dart' as pw;
 Future<Uint8List> generatePayslipPdf({
   required Map<String, dynamic> staff,
   required Map<String, dynamic> payslip,
+  String companyName = 'Bayu Lestari Resort',
 }) async {
   final pdf = pw.Document();
 
@@ -23,29 +24,29 @@ Future<Uint8List> generatePayslipPdf({
         .asUint8List(),
   );
 
-  // ========= STAFF INFO FROM users/{uid} =========
-  final staffName = (staff['displayName'] ??
+  // ========= STAFF INFO (snake_case from Supabase) =========
+  final staffName = (staff['full_name'] ??
+      staff['displayName'] ??
       staff['name'] ??
-      staff['staffName'] ??
       staff['email'] ??
       '-')
       .toString();
-  final employeeId = (staff['employeeId'] ?? '-').toString();
+  final employeeId = (staff['staff_number'] ?? staff['employeeId'] ?? '-').toString();
   final department = (staff['department'] ?? '-').toString();
-  final employmentType = (staff['employmentType'] ?? '-').toString();
+  final employmentType = (staff['employment_type'] ?? staff['employmentType'] ?? '-').toString();
   final email = (staff['email'] ?? '-').toString();
-  final joinDate = (staff['joinDate'] ?? '-').toString();
-  final siteName = (staff['siteName'] ?? staff['site'] ?? '').toString();
+  final joinDate = (staff['date_joined'] ?? staff['joinDate'] ?? '-').toString();
+  final siteName = (staff['site'] ?? staff['siteName'] ?? '').toString();
 
-  // ========= PAYSLIP INFO FROM users/{uid}/payslips/{doc} =========
-  final periodLabel = (payslip['monthLabel'] ?? '-').toString();
-  final basicSalary = _toDouble(payslip['basicSalary']);
-  final allowance = _toDouble(payslip['allowance']);
-  final overtime = _toDouble(payslip['overtime']);
-  final deductions = _toDouble(payslip['deductions']);
-  final kwsp = _toDouble(payslip['kwsp']);
-  final socso = _toDouble(payslip['socso']);
-  final netPay = _toDouble(payslip['netPay']);
+  // ========= PAYSLIP INFO (snake_case from Supabase) =========
+  final periodLabel = (payslip['month_label'] ?? payslip['monthLabel'] ?? '-').toString();
+  final basicSalary = _toDouble(payslip['basic_salary'] ?? payslip['basicSalary']);
+  final allowance = _toDouble(payslip['total_allowances'] ?? payslip['allowance']);
+  final overtime = _toDouble((payslip['allowances'] as Map?)?['overtime'] ?? payslip['overtime']);
+  final deductions = _toDouble((payslip['deductions'] as Map?)?['other'] ?? payslip['deductions']);
+  final kwsp = _toDouble(payslip['epf_employee'] ?? payslip['kwsp']);
+  final socso = _toDouble(payslip['socso_employee'] ?? payslip['socso']);
+  final netPay = _toDouble(payslip['net_pay'] ?? payslip['netPay']);
 
   pdf.addPage(
     pw.MultiPage(
@@ -74,7 +75,7 @@ Future<Uint8List> generatePayslipPdf({
                 ),
                 pw.SizedBox(height: 4),
                 pw.Text(
-                  'Bayu Lestari Resort',
+                  companyName,
                   style: const pw.TextStyle(fontSize: 12),
                 ),
                 pw.Text(

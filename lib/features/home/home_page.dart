@@ -7,7 +7,7 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 
 import '../../services/supabase_service.dart';
 import '../../services/company_service.dart';
-import '../attendance/check_in_out_page.dart';
+import '../attendance/check_in_out_export.dart';
 import '../attendance/my_attendance_page.dart';
 import '../claims/apply_claim_page.dart';
 import '../claims/my_claims_page.dart';
