@@ -144,7 +144,7 @@ class _HrLeaveListPageState extends State<HrLeaveListPage> {
         .update({
       'status': newStatus,
       'hr_notes': comment,
-      'approved_by': SupabaseService.instance.staffId,
+      'approved_by': SupabaseService.instance.userId,
     })
         .eq('id', leaveId);
 
