@@ -1,31 +1,30 @@
 // lib/main.dart
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:firebase_core/firebase_core.dart';
-import 'package:firebase_auth/firebase_auth.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 
-import 'firebase_options.dart';
+import 'core/constants.dart';
 import 'features/auth/login_page.dart';
 import 'features/home/home_page.dart';
 import 'services/notification_service.dart';
 import 'services/company_service.dart';
+import 'services/supabase_service.dart';
 
 // ========================================================
-// 🔥 GLOBAL NAVIGATION KEY (untuk buka page bila tap notif)
+// GLOBAL NAVIGATION KEY (untuk buka page bila tap notif)
 // ========================================================
 final GlobalKey<NavigatorState> navigatorKey = GlobalKey<NavigatorState>();
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
-  // Init Firebase
-  if (Firebase.apps.isEmpty) {
-    await Firebase.initializeApp(
-      options: DefaultFirebaseOptions.currentPlatform,
-    );
-  }
+  // Init Supabase
+  await Supabase.initialize(
+    url: SmartBayu.supabaseUrl,
+    anonKey: SmartBayu.supabaseAnonKey,
+  );
 
-  // ⭐ Init Notification Service (FCM + local) sekali sahaja
+  // Init Notification Service (local notifications only)
   await NotificationService.instance.init();
 
   // Start company config listener
@@ -52,7 +51,6 @@ class SmartBayuApp extends StatelessWidget {
       title: 'SmartBayu',
       debugShowCheckedModeBanner: false,
 
-      // 🔥 penting untuk buka page dari notification
       navigatorKey: navigatorKey,
 
       theme: ThemeData(
@@ -85,57 +83,87 @@ class SmartBayuApp extends StatelessWidget {
 }
 
 // ========================================================
-// 🔥 AUTH GATE = tentukan login / home
+// AUTH GATE = determine login / home
 // ========================================================
-class _AuthGate extends StatelessWidget {
+class _AuthGate extends StatefulWidget {
   const _AuthGate({super.key});
 
   @override
+  State<_AuthGate> createState() => _AuthGateState();
+}
+
+class _AuthGateState extends State<_AuthGate> {
+  bool _loading = true;
+  bool _loggedIn = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _checkSession();
+
+    // Listen for auth state changes
+    Supabase.instance.client.auth.onAuthStateChange.listen((data) {
+      final event = data.event;
+      if (event == AuthChangeEvent.signedIn) {
+        _onSignedIn();
+      } else if (event == AuthChangeEvent.signedOut) {
+        NotificationService.instance.disposeUserNotificationListener();
+        SupabaseService.instance.clear();
+        if (mounted) setState(() => _loggedIn = false);
+      }
+    });
+  }
+
+  Future<void> _checkSession() async {
+    final session = Supabase.instance.client.auth.currentSession;
+    if (session != null) {
+      await _onSignedIn();
+    } else {
+      if (mounted) setState(() { _loading = false; _loggedIn = false; });
+    }
+  }
+
+  Future<void> _onSignedIn() async {
+    await SupabaseService.instance.loadUserContext();
+    final staffId = SupabaseService.instance.staffId;
+    if (staffId != null) {
+      NotificationService.instance.startUserNotificationListener(staffId);
+    }
+    if (mounted) setState(() { _loading = false; _loggedIn = true; });
+  }
+
+  @override
   Widget build(BuildContext context) {
-    return StreamBuilder<User?>(
-      stream: FirebaseAuth.instance.authStateChanges(),
-      builder: (context, snap) {
-        if (snap.connectionState == ConnectionState.waiting) {
-          return const Scaffold(
-            body: Center(child: CircularProgressIndicator()),
+    if (_loading) {
+      return const Scaffold(
+        body: Center(child: CircularProgressIndicator()),
+      );
+    }
+
+    if (!_loggedIn) {
+      return const LoginPage();
+    }
+
+    final svc = SupabaseService.instance;
+    return HomePage(
+      isHr: svc.isHr,
+      displayName: svc.fullName.isNotEmpty ? svc.fullName : (svc.email ?? 'SmartBayu User'),
+      roleTitle: svc.isHr ? 'HR / Manager' : 'Staff',
+      siteName: CompanyService.instance.siteName,
+      photoUrl: svc.photoUrl,
+      onLogout: (ctx) async {
+        await NotificationService.instance.disposeUserNotificationListener();
+        await SupabaseService.instance.signOut();
+        if (ctx.mounted) {
+          Navigator.of(ctx).pushAndRemoveUntil(
+            MaterialPageRoute(builder: (_) => const LoginPage()),
+            (_) => false,
           );
         }
-
-        final user = snap.data;
-
-        // Belum login
-        if (user == null) {
-          // pastikan listener lama clear kalau ada
-          NotificationService.instance.disposeUserNotificationListener();
-          return const LoginPage();
-        }
-
-        // 🔥 Start listener noti untuk user semasa
-        NotificationService.instance.startUserNotificationListener(user.uid);
-
-        // NOTE: buat masa ni isHr: false (nanti boleh baca dari Firestore)
-        return HomePage(
-          isHr: false,
-          displayName: user.email ?? 'SmartBayu User',
-          roleTitle: 'HR Admin Manager • Bayu Lestari',
-          siteName: 'Resort Island',
-          photoUrl: user.photoURL,
-          onLogout: (ctx) async {
-            await FirebaseAuth.instance.signOut();
-            await NotificationService.instance
-                .disposeUserNotificationListener();
-            if (ctx.mounted) {
-              Navigator.of(ctx).pushAndRemoveUntil(
-                MaterialPageRoute(builder: (_) => const LoginPage()),
-                    (_) => false,
-              );
-            }
-          },
-          insideGeofence: true,
-          lastIn: '--:--',
-          lastOut: '--:--',
-        );
       },
+      insideGeofence: true,
+      lastIn: '--:--',
+      lastOut: '--:--',
     );
   }
 }

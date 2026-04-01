@@ -1,8 +1,8 @@
 // lib/features/payslip/payslip_list_page.dart
-import 'package:cloud_firestore/cloud_firestore.dart';
-import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 
+import '../../services/supabase_service.dart';
 import 'payslip_pdf_helper.dart';
 import 'payslip_pdf_preview_page.dart';
 
@@ -11,15 +11,7 @@ class PayslipListPage extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final uid = FirebaseAuth.instance.currentUser!.uid;
-
-    // Staff view: payslips bawah users/{uid}/payslips
-    final payslipStream = FirebaseFirestore.instance
-        .collection('users')
-        .doc(uid)
-        .collection('payslips')
-        .orderBy('createdAt', descending: true)
-        .snapshots();
+    final staffId = SupabaseService.instance.staffId;
 
     return Scaffold(
       backgroundColor: const Color(0xFFF5F5F7),
@@ -38,70 +30,121 @@ class PayslipListPage extends StatelessWidget {
         centerTitle: true,
       ),
       body: SafeArea(
-        child: StreamBuilder<QuerySnapshot>(
-          stream: payslipStream,
-          builder: (context, snap) {
-            if (snap.connectionState == ConnectionState.waiting) {
-              return const Center(child: CircularProgressIndicator());
-            }
-
-            if (snap.hasError) {
-              return Center(child: Text('Error: ${snap.error}'));
-            }
-
-            final docs = snap.data?.docs ?? [];
-
-            if (docs.isEmpty) {
-              return _buildEmptyState(context);
-            }
-
-            return ListView.builder(
-              padding: const EdgeInsets.fromLTRB(16, 16, 16, 24),
-              itemCount: docs.length,
-              itemBuilder: (context, index) {
-                final doc = docs[index];
-                final data = doc.data() as Map<String, dynamic>;
-
-                final monthLabel =
-                (data['monthLabel'] ?? 'Unknown period').toString();
-
-                final basic = _toDouble(data['basicSalary']);
-                final allowance = _toDouble(data['allowance']);
-                final overtime = _toDouble(data['overtime']);
-                final deductions = _toDouble(data['deductions']);
-                final kwsp = _toDouble(data['kwsp']); // NEW
-                final socso = _toDouble(data['socso']); // NEW
-                final netPay = _toDouble(data['netPay']);
-                final pdfUrl = (data['pdfUrl'] ?? '').toString();
-
-                final createdAt = data['createdAt'];
-                DateTime? created;
-                if (createdAt is Timestamp) {
-                  created = createdAt.toDate();
-                }
-
-                return _PayslipCard(
-                  monthLabel: monthLabel,
-                  createdAt: created,
-                  basic: basic,
-                  allowance: allowance,
-                  overtime: overtime,
-                  deductions: deductions,
-                  kwsp: kwsp,
-                  socso: socso,
-                  netPay: netPay,
-                  pdfUrl: pdfUrl.isEmpty ? null : pdfUrl,
-                  rawData: data, // ✅ pass full data for PDF
-                );
-              },
-            );
-          },
-        ),
+        child: staffId == null
+            ? const Center(child: Text('Not signed in'))
+            : _PayslipListBody(staffId: staffId),
       ),
     );
   }
+}
 
-  double _toDouble(dynamic v) {
+class _PayslipListBody extends StatelessWidget {
+  const _PayslipListBody({required this.staffId});
+  final String staffId;
+
+  @override
+  Widget build(BuildContext context) {
+    return StreamBuilder<List<Map<String, dynamic>>>(
+      stream: Supabase.instance.client
+          .from('payslips')
+          .stream(primaryKey: ['id'])
+          .eq('staff_id', staffId)
+          .order('period_end', ascending: false),
+      builder: (context, snap) {
+        if (snap.connectionState == ConnectionState.waiting) {
+          return const Center(child: CircularProgressIndicator());
+        }
+
+        if (snap.hasError) {
+          return Center(child: Text('Error: ${snap.error}'));
+        }
+
+        final rows = snap.data ?? [];
+
+        if (rows.isEmpty) {
+          return _buildEmptyState(context);
+        }
+
+        return ListView.builder(
+          padding: const EdgeInsets.fromLTRB(16, 16, 16, 24),
+          itemCount: rows.length,
+          itemBuilder: (context, index) {
+            final data = rows[index];
+
+            // Build month label from period_start / period_end
+            final monthLabel = _buildMonthLabel(data);
+
+            final basic = _toDouble(data['basic_salary']);
+            final allowance = _toDouble(data['total_allowances']);
+            final overtime = 0.0; // not in Supabase schema
+            final deductions = _toDouble(data['total_deductions']);
+            final kwsp = _toDouble(data['epf_employee']);
+            final socso = _toDouble(data['socso_employee']);
+            final netPay = _toDouble(data['net_pay']);
+            final pdfUrl = (data['pdf_url'] ?? '').toString();
+
+            DateTime? created;
+            final createdAt = data['created_at'];
+            if (createdAt is String && createdAt.isNotEmpty) {
+              created = DateTime.tryParse(createdAt);
+            }
+
+            // Build rawData map compatible with PDF helper
+            final rawData = <String, dynamic>{
+              'monthLabel': monthLabel,
+              'basicSalary': basic,
+              'allowance': allowance,
+              'overtime': overtime,
+              'deductions': deductions,
+              'kwsp': kwsp,
+              'socso': socso,
+              'netPay': netPay,
+              'pdfUrl': pdfUrl,
+              // Pass through original Supabase fields too
+              ...data,
+            };
+
+            return _PayslipCard(
+              monthLabel: monthLabel,
+              createdAt: created,
+              basic: basic,
+              allowance: allowance,
+              overtime: overtime,
+              deductions: deductions,
+              kwsp: kwsp,
+              socso: socso,
+              netPay: netPay,
+              pdfUrl: pdfUrl.isEmpty ? null : pdfUrl,
+              rawData: rawData,
+            );
+          },
+        );
+      },
+    );
+  }
+
+  String _buildMonthLabel(Map<String, dynamic> data) {
+    // Use month_label if stored, otherwise derive from period_end
+    if (data['month_label'] != null &&
+        (data['month_label'] as String).isNotEmpty) {
+      return data['month_label'] as String;
+    }
+
+    final periodEnd = data['period_end'];
+    if (periodEnd is String && periodEnd.isNotEmpty) {
+      final dt = DateTime.tryParse(periodEnd);
+      if (dt != null) {
+        const months = [
+          '', 'January', 'February', 'March', 'April', 'May', 'June',
+          'July', 'August', 'September', 'October', 'November', 'December',
+        ];
+        return '${months[dt.month]} ${dt.year}';
+      }
+    }
+    return 'Unknown period';
+  }
+
+  static double _toDouble(dynamic v) {
     if (v == null) return 0;
     if (v is num) return v.toDouble();
     return double.tryParse(v.toString()) ?? 0;
@@ -175,7 +218,7 @@ class _PayslipCard extends StatelessWidget {
   final double socso;
   final double netPay;
   final String? pdfUrl;
-  final Map<String, dynamic> rawData; // ✅ original Firestore data
+  final Map<String, dynamic> rawData;
 
   @override
   Widget build(BuildContext context) {
@@ -344,15 +387,8 @@ class _PayslipCard extends StatelessWidget {
 
   Future<void> _openPdfPreview(BuildContext context) async {
     try {
-      final uid = FirebaseAuth.instance.currentUser!.uid;
-
-      // Ambil info staff dari users/{uid}
-      final userDoc = await FirebaseFirestore.instance
-          .collection('users')
-          .doc(uid)
-          .get();
-
-      final staffData = userDoc.data() ?? {};
+      final svc = SupabaseService.instance;
+      final staffData = svc.staffData ?? {};
 
       if (!context.mounted) return;
 

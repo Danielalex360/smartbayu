@@ -1,10 +1,9 @@
 // lib/features/hr/hr_company_settings_page.dart
 import 'dart:io';
 
-import 'package:cloud_firestore/cloud_firestore.dart';
-import 'package:firebase_storage/firebase_storage.dart';
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 
 import '../../services/company_service.dart';
 
@@ -55,12 +54,9 @@ class _HrCompanySettingsPageState extends State<HrCompanySettingsPage> {
   }
 
   Future<void> _loadConfig() async {
-    final snap = await FirebaseFirestore.instance
-        .doc('app_config/company')
-        .get();
-
-    final data = (snap.data() ?? {}) as Map<String, dynamic>;
-    final config = CompanyConfig.fromMap(data);
+    // Reload company service to ensure fresh data
+    await CompanyService.instance.reload();
+    final config = CompanyService.instance.config;
 
     _companyNameCtrl.text = config.companyName;
     _siteNameCtrl.text = config.siteName;
@@ -89,10 +85,23 @@ class _HrCompanySettingsPageState extends State<HrCompanySettingsPage> {
 
     try {
       final file = File(shot.path);
-      final ref = FirebaseStorage.instance
-          .ref('company/logo_${DateTime.now().millisecondsSinceEpoch}.jpg');
-      await ref.putFile(file, SettableMetadata(contentType: 'image/jpeg'));
-      final url = await ref.getDownloadURL();
+      final bytes = await file.readAsBytes();
+      final path = 'company/logo_${DateTime.now().millisecondsSinceEpoch}.jpg';
+
+      await Supabase.instance.client.storage
+          .from('smartbayu')
+          .uploadBinary(
+        path,
+        bytes,
+        fileOptions: const FileOptions(
+          contentType: 'image/jpeg',
+          upsert: true,
+        ),
+      );
+
+      final url = Supabase.instance.client.storage
+          .from('smartbayu')
+          .getPublicUrl(path);
 
       setState(() {
         _logoUrl = url;

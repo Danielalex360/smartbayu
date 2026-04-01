@@ -6,8 +6,6 @@
 //   - hr_attendance_report_page.dart
 //   - home_page.dart (clock card)
 
-import 'package:cloud_firestore/cloud_firestore.dart';
-
 // ─────────────────────── Punch Type ───────────────────────
 
 /// Three distinct punch types:
@@ -19,7 +17,6 @@ enum PunchType {
   breakStart,
   checkout;
 
-  /// Firestore string key
   String get key {
     switch (this) {
       case PunchType.checkin:
@@ -36,7 +33,7 @@ enum PunchType {
       case 'checkin':
         return PunchType.checkin;
       case 'break_start':
-      case 'break': // backward compat
+      case 'break':
         return PunchType.breakStart;
       case 'checkout':
         return PunchType.checkout;
@@ -59,12 +56,11 @@ enum PunchType {
 
 // ─────────────────────── Work State ───────────────────────
 
-/// Derived from the last punch in the day's punch list.
 enum WorkState {
-  idle,      // no punches yet
-  working,   // last punch was checkin
-  onBreak,   // last punch was break_start
-  done;      // last punch was checkout
+  idle,
+  working,
+  onBreak,
+  done;
 
   String get label {
     switch (this) {
@@ -101,9 +97,16 @@ class PunchEntry {
 
   factory PunchEntry.fromMap(Map<String, dynamic> m) {
     final ts = m['time'];
+    DateTime? time;
+    if (ts is String) {
+      time = DateTime.tryParse(ts);
+    } else if (ts is DateTime) {
+      time = ts;
+    }
+
     return PunchEntry(
       type: PunchType.fromKey(m['type'] as String?),
-      time: ts is Timestamp ? ts.toDate() : null,
+      time: time,
       lat: (m['lat'] as num?)?.toDouble(),
       lng: (m['lng'] as num?)?.toDouble(),
       geoOk: (m['geoOk'] as bool?) ?? false,
@@ -113,14 +116,13 @@ class PunchEntry {
 
   Map<String, dynamic> toMap() => {
         'type': type.key,
-        'time': time != null ? Timestamp.fromDate(time!) : null,
+        'time': time?.toUtc().toIso8601String(),
         'lat': lat,
         'lng': lng,
         'geoOk': geoOk,
         'confidence': confidence,
       };
 
-  /// Human-friendly label for timeline display.
   String displayLabel(int index) {
     switch (type) {
       case PunchType.checkin:
@@ -140,8 +142,6 @@ class DayRecord {
   final String rawStatus;
   final List<PunchEntry> punches;
   final bool? geoOk;
-
-  // Backward compat fields (old inAt/outAt format)
   final DateTime? legacyInAt;
   final DateTime? legacyOutAt;
 
@@ -154,50 +154,47 @@ class DayRecord {
     this.legacyOutAt,
   });
 
-  // ─── Factory from Firestore doc ───
-
-  factory DayRecord.fromFirestore(Map<String, dynamic> data) {
-    final workDateTs = data['workDate'] as Timestamp?;
-    final inTs = data['inAt'] as Timestamp?;
-    final outTs = data['outAt'] as Timestamp?;
-    final geoOk = data['geoOk'] as bool?;
+  /// Factory from Supabase row
+  factory DayRecord.fromSupabase(Map<String, dynamic> data) {
+    final dateStr = data['attendance_date'] as String?;
+    final checkInStr = data['check_in_time'] as String?;
+    final checkOutStr = data['check_out_time'] as String?;
     final rawStatus = (data['status'] ?? '').toString();
 
+    DateTime workDate;
+    if (dateStr != null) {
+      workDate = DateTime.tryParse(dateStr) ?? DateTime.now();
+    } else {
+      workDate = DateTime.now();
+    }
+
+    final inAt = checkInStr != null ? DateTime.tryParse(checkInStr) : null;
+    final outAt = checkOutStr != null ? DateTime.tryParse(checkOutStr) : null;
+    final faceVerified = data['face_verified'] as bool?;
+
     List<PunchEntry> punches = [];
-    if (data['punches'] != null) {
-      punches = (data['punches'] as List)
+    final punchesRaw = data['punches'];
+    if (punchesRaw != null && punchesRaw is List && punchesRaw.isNotEmpty) {
+      punches = punchesRaw
           .map((e) => PunchEntry.fromMap(Map<String, dynamic>.from(e as Map)))
           .toList();
     } else {
-      // Migrate old inAt/outAt format into punch entries
-      if (inTs != null) {
-        punches.add(PunchEntry(
-          type: PunchType.checkin,
-          time: inTs.toDate(),
-          geoOk: geoOk ?? false,
-        ));
+      // Derive from flat columns
+      if (inAt != null) {
+        punches.add(PunchEntry(type: PunchType.checkin, time: inAt));
       }
-      if (outTs != null) {
-        punches.add(PunchEntry(
-          type: PunchType.checkout,
-          time: outTs.toDate(),
-          geoOk: geoOk ?? false,
-        ));
+      if (outAt != null) {
+        punches.add(PunchEntry(type: PunchType.checkout, time: outAt));
       }
     }
-
-    final workDate = workDateTs?.toDate() ??
-        inTs?.toDate() ??
-        outTs?.toDate() ??
-        DateTime.now();
 
     return DayRecord(
       workDate: workDate,
       rawStatus: rawStatus,
       punches: punches,
-      geoOk: geoOk,
-      legacyInAt: inTs?.toDate(),
-      legacyOutAt: outTs?.toDate(),
+      geoOk: faceVerified,
+      legacyInAt: inAt,
+      legacyOutAt: outAt,
     );
   }
 
@@ -251,38 +248,26 @@ class DayRecord {
     return geoOk! ? 'Geofence: OK (inside)' : 'Geofence: outside';
   }
 
-  /// Total work minutes: sum of (checkin -> break_start) and (checkin -> checkout) spans.
   int? get totalWorkMinutes {
     if (punches.length < 2) return null;
-
     int total = 0;
     DateTime? lastIn;
-
     for (final p in punches) {
       if (p.time == null) continue;
       if (p.type == PunchType.checkin) {
         lastIn = p.time;
-      } else if ((p.type == PunchType.breakStart ||
-              p.type == PunchType.checkout) &&
-          lastIn != null) {
+      } else if ((p.type == PunchType.breakStart || p.type == PunchType.checkout) && lastIn != null) {
         total += p.time!.difference(lastIn).inMinutes;
         lastIn = null;
       }
     }
-
-    // Still working (last punch was checkin)
-    if (lastIn != null) {
-      total += DateTime.now().difference(lastIn).inMinutes;
-    }
-
+    if (lastIn != null) total += DateTime.now().difference(lastIn).inMinutes;
     return total > 0 ? total : null;
   }
 
-  /// Total break minutes: sum of (break_start -> checkin) spans.
   int get totalBreakMinutes {
     int total = 0;
     DateTime? breakStart;
-
     for (final p in punches) {
       if (p.time == null) continue;
       if (p.type == PunchType.breakStart) {
@@ -292,12 +277,7 @@ class DayRecord {
         breakStart = null;
       }
     }
-
-    // Still on break
-    if (breakStart != null) {
-      total += DateTime.now().difference(breakStart).inMinutes;
-    }
-
+    if (breakStart != null) total += DateTime.now().difference(breakStart).inMinutes;
     return total;
   }
 }

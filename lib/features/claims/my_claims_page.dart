@@ -1,6 +1,8 @@
-import 'package:cloud_firestore/cloud_firestore.dart';
-import 'package:firebase_auth/firebase_auth.dart';
+// lib/features/claims/my_claims_page.dart
 import 'package:flutter/material.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
+
+import '../../services/supabase_service.dart';
 
 class MyClaimsPage extends StatefulWidget {
   const MyClaimsPage({super.key});
@@ -22,48 +24,53 @@ class _MyClaimsPageState extends State<MyClaimsPage> {
     return Colors.blueGrey;
   }
 
-  String _formatDate(Timestamp? ts) {
-    if (ts == null) return '-';
-    final d = ts.toDate();
-    String two(int n) => n.toString().padLeft(2, '0');
-    return '${two(d.day)}/${two(d.month)}/${d.year}';
-  }
-
-  String _formatDateTime(Timestamp? ts) {
-    if (ts == null) return '-';
-    final d = ts.toDate();
-    String two(int n) => n.toString().padLeft(2, '0');
-    final date = '${two(d.day)}/${two(d.month)}/${d.year}';
-    final time = '${two(d.hour)}:${two(d.minute)}:${two(d.second)}';
-    return '$date $time';
-  }
-
-  Stream<QuerySnapshot<Map<String, dynamic>>> _myClaimsStream() {
-    final user = FirebaseAuth.instance.currentUser;
-    if (user == null) {
-      return const Stream<QuerySnapshot<Map<String, dynamic>>>.empty();
+  String _formatDate(String? dateStr) {
+    if (dateStr == null) return '-';
+    try {
+      final d = DateTime.parse(dateStr);
+      String two(int n) => n.toString().padLeft(2, '0');
+      return '${two(d.day)}/${two(d.month)}/${d.year}';
+    } catch (_) {
+      return '-';
     }
-    return FirebaseFirestore.instance
-        .collection('users')
-        .doc(user.uid)
-        .collection('claims')
-        .orderBy('createdAt', descending: true)
-        .snapshots();
+  }
+
+  String _formatDateTime(String? dateStr) {
+    if (dateStr == null) return '-';
+    try {
+      final d = DateTime.parse(dateStr).toLocal();
+      String two(int n) => n.toString().padLeft(2, '0');
+      final date = '${two(d.day)}/${two(d.month)}/${d.year}';
+      final time = '${two(d.hour)}:${two(d.minute)}:${two(d.second)}';
+      return '$date $time';
+    } catch (_) {
+      return '-';
+    }
+  }
+
+  Stream<List<Map<String, dynamic>>> _myClaimsStream() {
+    final staffId = SupabaseService.instance.staffId;
+    if (staffId == null) {
+      return const Stream<List<Map<String, dynamic>>>.empty();
+    }
+    return Supabase.instance.client
+        .from('staff_claims')
+        .stream(primaryKey: ['id'])
+        .eq('staff_id', staffId)
+        .order('created_at', ascending: false);
   }
 
   void _showClaimDetailSheet(Map<String, dynamic> data) {
-    final claimType = (data['claimType'] ?? 'Claim').toString();
+    final claimType = (data['claim_type'] ?? 'Claim').toString();
     final status = (data['status'] ?? 'pending').toString().toLowerCase();
     final statusLabel =
     status.isNotEmpty ? status[0].toUpperCase() + status.substring(1) : '';
     final num amountRaw = (data['amount'] ?? 0) as num;
     final amountStr = amountRaw.toStringAsFixed(2);
-    final note = (data['note'] ?? '').toString();
-    final claimDateTs =
-    data['claimDate'] is Timestamp ? data['claimDate'] as Timestamp : null;
-    final createdAtTs =
-    data['createdAt'] is Timestamp ? data['createdAt'] as Timestamp : null;
-    final receiptUrl = (data['receiptUrl'] ?? '').toString();
+    final note = (data['description'] ?? '').toString();
+    final claimDateStr = data['claim_date']?.toString();
+    final createdAtStr = data['created_at']?.toString();
+    final receiptUrl = (data['receipt_url'] ?? '').toString();
 
     showModalBottomSheet(
       context: context,
@@ -182,7 +189,7 @@ class _MyClaimsPageState extends State<MyClaimsPage> {
                                   ),
                                 ),
                                 Text(
-                                  _formatDate(claimDateTs),
+                                  _formatDate(claimDateStr),
                                   style: const TextStyle(
                                     fontWeight: FontWeight.w600,
                                   ),
@@ -244,7 +251,7 @@ class _MyClaimsPageState extends State<MyClaimsPage> {
                                   ),
                                 ),
                                 Text(
-                                  _formatDateTime(createdAtTs),
+                                  _formatDateTime(createdAtStr),
                                   style: const TextStyle(
                                     fontSize: 13,
                                     fontWeight: FontWeight.w500,
@@ -453,7 +460,7 @@ class _MyClaimsPageState extends State<MyClaimsPage> {
             const SizedBox(height: 4),
 
             Expanded(
-              child: StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+              child: StreamBuilder<List<Map<String, dynamic>>>(
                 stream: _myClaimsStream(),
                 builder: (context, snap) {
                   if (snap.connectionState == ConnectionState.waiting) {
@@ -462,18 +469,18 @@ class _MyClaimsPageState extends State<MyClaimsPage> {
                   if (snap.hasError) {
                     return Center(child: Text('Error: ${snap.error}'));
                   }
-                  if (!snap.hasData || snap.data!.docs.isEmpty) {
+                  if (!snap.hasData || snap.data!.isEmpty) {
                     return const _EmptyClaimsState();
                   }
 
-                  var docs = snap.data!.docs.toList();
+                  var docs = snap.data!.toList();
 
                   // filter status
                   if (_statusFilter != 'All') {
                     final target = _statusFilter.toLowerCase();
-                    docs = docs.where((doc) {
+                    docs = docs.where((data) {
                       final status =
-                      (doc.data()['status'] ?? '').toString().toLowerCase();
+                      (data['status'] ?? '').toString().toLowerCase();
                       return status == target;
                     }).toList();
                   }
@@ -488,11 +495,10 @@ class _MyClaimsPageState extends State<MyClaimsPage> {
                     padding: const EdgeInsets.fromLTRB(16, 8, 16, 16),
                     itemCount: docs.length,
                     itemBuilder: (context, index) {
-                      final doc = docs[index];
-                      final data = doc.data();
+                      final data = docs[index];
 
                       final claimType =
-                      (data['claimType'] ?? 'Claim').toString();
+                      (data['claim_type'] ?? 'Claim').toString();
                       final num amountRaw = (data['amount'] ?? 0) as num;
                       final amountStr = amountRaw.toStringAsFixed(2);
                       final status = (data['status'] ?? 'pending')
@@ -501,13 +507,9 @@ class _MyClaimsPageState extends State<MyClaimsPage> {
                       final statusLabel = status.isNotEmpty
                           ? status[0].toUpperCase() + status.substring(1)
                           : 'Pending';
-                      final note = (data['note'] ?? '').toString();
-                      final claimDateTs = data['claimDate'] is Timestamp
-                          ? data['claimDate'] as Timestamp
-                          : null;
-                      final createdAtTs = data['createdAt'] is Timestamp
-                          ? data['createdAt'] as Timestamp
-                          : null;
+                      final note = (data['description'] ?? '').toString();
+                      final claimDateStr = data['claim_date']?.toString();
+                      final createdAtStr = data['created_at']?.toString();
 
                       return InkWell(
                         borderRadius: BorderRadius.circular(18),
@@ -629,7 +631,7 @@ class _MyClaimsPageState extends State<MyClaimsPage> {
                                           const SizedBox(width: 6),
                                           Expanded(
                                             child: Text(
-                                              'Claim date: ${_formatDate(claimDateTs)}',
+                                              'Claim date: ${_formatDate(claimDateStr)}',
                                               style: const TextStyle(
                                                 fontWeight: FontWeight.w600,
                                               ),
@@ -647,7 +649,7 @@ class _MyClaimsPageState extends State<MyClaimsPage> {
                                       ],
                                       const SizedBox(height: 6),
                                       Text(
-                                        'Submitted at: ${_formatDateTime(createdAtTs)}',
+                                        'Submitted at: ${_formatDateTime(createdAtStr)}',
                                         style: const TextStyle(
                                           fontSize: 11,
                                           color: Colors.grey,

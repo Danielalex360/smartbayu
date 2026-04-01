@@ -1,8 +1,5 @@
 plugins {
     id("com.android.application")
-    // START: FlutterFire Configuration
-    id("com.google.gms.google-services")
-    // END: FlutterFire Configuration
     id("org.jetbrains.kotlin.android")
     // The Flutter Gradle Plugin must be applied after the Android and Kotlin Gradle plugins.
     id("dev.flutter.flutter-gradle-plugin")
@@ -14,11 +11,8 @@ android {
     ndkVersion = flutter.ndkVersion
 
     compileOptions {
-        // Kau memang guna Java 11, so kita kekalkan:
         sourceCompatibility = JavaVersion.VERSION_11
         targetCompatibility = JavaVersion.VERSION_11
-
-        // 👉 PENTING: Enable core library desugaring
         isCoreLibraryDesugaringEnabled = true
     }
 
@@ -50,17 +44,8 @@ flutter {
 }
 
 dependencies {
-    // 👉 Tambah ni untuk desugaring:
     coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.0.4")
 
-    // BOM memudahkan pengurusan versi Firebase
-    implementation(platform("com.google.firebase:firebase-bom:33.3.0"))
-
-    // Pilih modul yang kau guna:
-    implementation("com.google.firebase:firebase-analytics")   // contoh
-    // implementation("com.google.firebase:firebase-auth")
-    // implementation("com.google.firebase:firebase-firestore")
-
-    // ----------- ML Kit Face Detector ---------------------
+    // ML Kit Face Detector
     implementation("com.google.mlkit:face-detection:16.1.5")
 }

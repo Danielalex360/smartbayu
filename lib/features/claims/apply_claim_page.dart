@@ -1,9 +1,9 @@
 // lib/features/claims/apply_claim_page.dart
-import 'package:cloud_firestore/cloud_firestore.dart';
-import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 
-import '../../services/notification_service.dart'; // ⭐ NOTIFICATION SERVICE
+import '../../services/notification_service.dart';
+import '../../services/supabase_service.dart';
 
 class ApplyClaimPage extends StatefulWidget {
   const ApplyClaimPage({super.key});
@@ -44,8 +44,11 @@ class _ApplyClaimPageState extends State<ApplyClaimPage> {
   }
 
   Future<void> _submit() async {
-    final user = FirebaseAuth.instance.currentUser;
-    if (user == null) {
+    final svc = SupabaseService.instance;
+    final staffId = svc.staffId;
+    final companyId = svc.companyId;
+
+    if (staffId == null || companyId == null) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('You are not logged in.')),
       );
@@ -63,60 +66,50 @@ class _ApplyClaimPageState extends State<ApplyClaimPage> {
     setState(() => _saving = true);
 
     try {
-      final uid = user.uid;
-
-      // 🔥 AMBIL NAMA STAFF DARIPADA users/{uid}
-      final userSnap = await FirebaseFirestore.instance
-          .collection('users')
-          .doc(uid)
-          .get();
-
-      final userData = userSnap.data() ?? {};
-      final staffName = (userData['name'] ??
-          userData['fullName'] ??
-          userData['employeeName'] ??
-          user.email ??
-          'Unknown Staff')
-          .toString();
-
       final amountText = _amountCtrl.text.trim();
       final double amount = double.tryParse(amountText) ?? 0.0;
 
-      final claimRef = FirebaseFirestore.instance
-          .collection('users')
-          .doc(uid)
-          .collection('claims');
+      final claimDateIso = DateTime(
+        _selectedDate!.year,
+        _selectedDate!.month,
+        _selectedDate!.day,
+      ).toIso8601String().substring(0, 10);
 
-      // 🧾 SIMPAN CLAIM
-      final doc = await claimRef.add({
-        'amount': amount,
-        'claimType': _claimType,
-        'claimDate': Timestamp.fromDate(_selectedDate!),
-        'createdAt': FieldValue.serverTimestamp(),
-        'note': _noteCtrl.text.trim(),
-        'receiptUrl': null,
-        'staffUid': uid,
-        'staffName': staffName,
-        'status': 'pending',
-      });
+      // Insert into staff_claims table
+      final inserted = await Supabase.instance.client
+          .from('staff_claims')
+          .insert({
+            'staff_id': staffId,
+            'company_id': companyId,
+            'claim_type': _claimType,
+            'claim_date': claimDateIso,
+            'amount': amount,
+            'description': _noteCtrl.text.trim(),
+            'status': 'pending',
+          })
+          .select('id')
+          .single();
 
-      // 🔔 SIMPAN REKOD NOTIFICATION UNTUK STAFF (NOTIFICATION CENTER)
+      final recordId = inserted['id'].toString();
+
+      // SIMPAN REKOD NOTIFICATION UNTUK STAFF (NOTIFICATION CENTER)
       await NotificationService.instance.push(
-        userId: uid,
+        staffId: staffId,
         title: 'Claim submitted',
         message:
         '$_claimType claim RM${amount.toStringAsFixed(2)} is pending approval.',
         type: 'claim',
+        docId: recordId,
       );
 
-      // 📲 POPUP LOCAL NOTI PADA DEVICE SEKARANG (STAFF NAMPAK TERUS)
+      // POPUP LOCAL NOTI PADA DEVICE SEKARANG (STAFF NAMPAK TERUS)
       await NotificationService.instance.showLocal(
         title: 'Claim submitted',
         body:
         'RM${amount.toStringAsFixed(2)} $_claimType claim sent for approval.',
         data: {
           'screen': 'claims',
-          'claimId': doc.id,
+          'claimId': recordId,
         },
       );
 

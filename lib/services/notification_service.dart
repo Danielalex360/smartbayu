@@ -1,55 +1,37 @@
 // lib/services/notification_service.dart
-import 'dart:async';
 import 'dart:convert';
 
-import 'package:cloud_firestore/cloud_firestore.dart';
-import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 
-/// NotificationService V3
-/// - Handle FCM + Local Popup Notification
-/// - Support method lama (push(), showLocal())
-/// - Support notification center & popup real-time
-///
-/// Cara guna (WAJIB):
-/// - Dalam main.dart → panggil sekali sahaja:
-///   await NotificationService.instance.init();
-///
-/// - Untuk navigation bila user tap notification:
-///   NotificationService.instance.init(context) (lepas login)
+import 'supabase_service.dart';
 
+/// NotificationService V4 — Supabase Realtime + Local Notifications
+///
+/// Cara guna:
+/// - main.dart → await NotificationService.instance.init();
+/// - After login → NotificationService.instance.startUserNotificationListener(staffId);
+/// - On logout → NotificationService.instance.disposeUserNotificationListener();
 class NotificationService {
   NotificationService._();
   static final NotificationService instance = NotificationService._();
 
-  final FlutterLocalNotificationsPlugin _local =
-  FlutterLocalNotificationsPlugin();
+  final FlutterLocalNotificationsPlugin _local = FlutterLocalNotificationsPlugin();
 
   bool _initialized = false;
-  BuildContext? _rootContext;
-
-  // FCM push via Firestore-based notifications (no legacy server key needed).
-  // Direct FCM v1 API calls should be done server-side (Cloud Functions),
-  // not from the client app. The Firestore listener handles real-time popups.
-
-  StreamSubscription<QuerySnapshot<Map<String, dynamic>>>?
-  _userNotificationListener;
+  RealtimeChannel? _channel;
 
   // ================================================================
-  // INIT (sudah optional context)
+  // INIT (local notifications only — no FCM)
   // ================================================================
   Future<void> init([BuildContext? context]) async {
-    if (context != null) _rootContext = context;
-
     if (_initialized) return;
     _initialized = true;
 
-    // Init local notification channel
     const androidInit = AndroidInitializationSettings('@mipmap/ic_launcher');
     const iosInit = DarwinInitializationSettings();
-    const initSettings =
-    InitializationSettings(android: androidInit, iOS: iosInit);
+    const initSettings = InitializationSettings(android: androidInit, iOS: iosInit);
 
     await _local.initialize(
       initSettings,
@@ -58,123 +40,45 @@ class NotificationService {
         if (payload == null || payload.isEmpty) return;
         try {
           final data = jsonDecode(payload) as Map<String, dynamic>;
-          _handleNavigationFromData(data);
+          debugPrint('🔔 Notification tapped: type=${data['type']}');
         } catch (_) {}
       },
     );
-
-    // Request Permission
-    final messaging = FirebaseMessaging.instance;
-    await messaging.requestPermission(alert: true, badge: true, sound: true);
-
-    // Foreground message → terus popup (kalau pakai FCM)
-    FirebaseMessaging.onMessage.listen(_onForegroundMessage);
-
-    // App dibuka dari notification (background)
-    FirebaseMessaging.onMessageOpenedApp.listen((msg) {
-      _handleNavigationFromData(msg.data);
-    });
-
-    // App launch dari terminate via notification
-    final initialMsg = await messaging.getInitialMessage();
-    if (initialMsg != null) _handleNavigationFromData(initialMsg.data);
   }
 
   // ================================================================
-  // SEND NOTIFICATION VIA FIRESTORE (triggers real-time listener)
-  // ================================================================
-  /// Sends a notification to a specific user via Firestore.
-  /// The real-time listener on the target user's device will pick it up
-  /// and show a local popup automatically.
-  Future<void> sendToUser({
-    required String userId,
-    required String title,
-    required String body,
-    required String type,
-    String? docId,
-  }) async {
-    await FirebaseFirestore.instance.collection('notifications').add({
-      'userId': userId,
-      'title': title,
-      'message': body,
-      'type': type,
-      if (docId != null) 'docId': docId,
-      'isRead': false,
-      'createdAt': FieldValue.serverTimestamp(),
-    });
-  }
-
-  /// Send notification to multiple users
-  Future<void> sendToMultipleUsers({
-    required List<String> userIds,
-    required String title,
-    required String body,
-    required String type,
-    String? docId,
-  }) async {
-    for (final uid in userIds) {
-      await sendToUser(userId: uid, title: title, body: body, type: type, docId: docId);
-    }
-  }
-
-  // ================================================================
-  // FOREGROUND POPUP (LOCAL) – untuk mesej FCM
-  // ================================================================
-  Future<void> _onForegroundMessage(RemoteMessage msg) async =>
-      _showLocalNotificationFromMessage(msg);
-
-  Future<void> _showLocalNotificationFromMessage(RemoteMessage msg) async {
-    final noti = msg.notification;
-    final title = noti?.title ?? msg.data['title'] ?? 'SmartBayu';
-    final body = noti?.body ?? msg.data['body'] ?? '';
-
-    final id = DateTime.now().millisecondsSinceEpoch ~/ 1000;
-
-    await _local.show(
-      id,
-      title,
-      body,
-      NotificationDetails(
-        android: const AndroidNotificationDetails(
-          'smartbayu_channel',
-          'SmartBayu Notifications',
-          importance: Importance.max,
-          priority: Priority.high,
-        ),
-        iOS: const DarwinNotificationDetails(),
-      ),
-      payload: jsonEncode(msg.data),
-    );
-  }
-
-  // ================================================================
-  // TAP ROUTE HANDLER
-  // ================================================================
-  void _handleNavigationFromData(Map<String, dynamic> data) {
-    // Navigation is handled by the notification page itself when tapped.
-    // FCM background/terminated taps land here but the app opens to home
-    // which is the correct behaviour for now.
-    final type = (data['type'] ?? data['screen'] ?? '') as String;
-    debugPrint('🔔 Notification tapped: type=$type');
-  }
-
-  // ================================================================
-  // LEGACY SUPPORT API (kod lama masih boleh jalan)
+  // SEND NOTIFICATION VIA SUPABASE (inserts into staff_notifications)
   // ================================================================
   Future<void> push({
-    required String userId,
+    required String staffId,
+    required String title,
+    required String message,
+    required String type,
+    String? docId,
+  }) async {
+    final companyId = SupabaseService.instance.companyId;
+    if (companyId == null) return;
+
+    await Supabase.instance.client.from('staff_notifications').insert({
+      'company_id': companyId,
+      'staff_id': staffId,
+      'title': title,
+      'message': message,
+      'type': type,
+      if (docId != null) 'data': {'docId': docId},
+    });
+  }
+
+  /// Send notification to multiple staff
+  Future<void> sendToMultiple({
+    required List<String> staffIds,
     required String title,
     required String message,
     required String type,
   }) async {
-    await FirebaseFirestore.instance.collection('notifications').add({
-      'userId': userId,
-      'title': title,
-      'message': message,
-      'type': type,
-      'isRead': false,
-      'createdAt': FieldValue.serverTimestamp(),
-    });
+    for (final id in staffIds) {
+      await push(staffId: id, title: title, message: message, type: type);
+    }
   }
 
   Future<void> showLocal({
@@ -189,8 +93,8 @@ class NotificationService {
       body,
       NotificationDetails(
         android: const AndroidNotificationDetails(
-          'smartbayu_manual',
-          'Local SmartBayu Noti',
+          'smartbayu_channel',
+          'SmartBayu Notifications',
           importance: Importance.max,
           priority: Priority.high,
         ),
@@ -201,43 +105,42 @@ class NotificationService {
   }
 
   // ================================================================
-  // REAL-TIME LISTENER UNTUK NOTI (BELL + POPUP STAFF)
+  // REAL-TIME LISTENER (Supabase Realtime → local popup)
   // ================================================================
-  Future<void> startUserNotificationListener(String userId) async {
-    // stop listener lama dulu
-    await _userNotificationListener?.cancel();
+  Future<void> startUserNotificationListener(String staffId) async {
+    await disposeUserNotificationListener();
 
-    _userNotificationListener = FirebaseFirestore.instance
-        .collection('notifications')
-        .where('userId', isEqualTo: userId)
-        .orderBy('createdAt', descending: true)
-        .snapshots()
-        .listen((snapshot) {
-      for (final change in snapshot.docChanges) {
-        // hanya doc yang BARU ditambah
-        if (change.type == DocumentChangeType.added) {
-          final data = change.doc.data();
-          if (data == null) continue;
+    _channel = Supabase.instance.client
+        .channel('staff_notifications_$staffId')
+        .onPostgresChanges(
+          event: PostgresChangeEvent.insert,
+          schema: 'public',
+          table: 'staff_notifications',
+          filter: PostgresChangeFilter(
+            type: PostgresChangeFilterType.eq,
+            column: 'staff_id',
+            value: staffId,
+          ),
+          callback: (payload) {
+            final newRow = payload.newRecord;
+            final title = (newRow['title'] ?? 'SmartBayu').toString();
+            final message = (newRow['message'] ?? '').toString();
+            final type = (newRow['type'] ?? 'general').toString();
 
-          final title = (data['title'] ?? 'SmartBayu').toString();
-          final message = (data['message'] ?? '').toString();
-          final type = (data['type'] ?? 'general').toString();
-
-          // 👉 Popup local notification
-          showLocal(
-            title: title,
-            body: message,
-            data: {
-              'type': type,
-            },
-          );
-        }
-      }
-    });
+            showLocal(
+              title: title,
+              body: message,
+              data: {'type': type},
+            );
+          },
+        )
+        .subscribe();
   }
 
   Future<void> disposeUserNotificationListener() async {
-    await _userNotificationListener?.cancel();
-    _userNotificationListener = null;
+    if (_channel != null) {
+      await Supabase.instance.client.removeChannel(_channel!);
+      _channel = null;
+    }
   }
 }

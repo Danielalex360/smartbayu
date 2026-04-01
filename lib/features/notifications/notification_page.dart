@@ -1,7 +1,8 @@
-import 'package:cloud_firestore/cloud_firestore.dart';
-import 'package:firebase_auth/firebase_auth.dart';
+// lib/features/notifications/notification_page.dart
 import 'package:flutter/material.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 
+import '../../services/supabase_service.dart';
 import '../payslip/payslip_list_page.dart';
 import '../claims/my_claims_page.dart';
 import '../leave/my_leave_list_page.dart';
@@ -11,13 +12,7 @@ class NotificationPage extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final uid = FirebaseAuth.instance.currentUser!.uid;
-
-    final stream = FirebaseFirestore.instance
-        .collection('notifications')
-        .where('userId', isEqualTo: uid)
-        .orderBy('createdAt', descending: true)
-        .snapshots();
+    final staffId = SupabaseService.instance.staffId;
 
     return Scaffold(
       backgroundColor: const Color(0xFFF5F5F7),
@@ -36,70 +31,85 @@ class NotificationPage extends StatelessWidget {
         ),
       ),
       body: SafeArea(
-        child: StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
-          stream: stream,
-          builder: (context, snap) {
-            if (snap.connectionState == ConnectionState.waiting) {
-              return const Center(child: CircularProgressIndicator());
+        child: staffId == null
+            ? const Center(child: Text('Not signed in'))
+            : _NotificationListBody(staffId: staffId),
+      ),
+    );
+  }
+}
+
+class _NotificationListBody extends StatelessWidget {
+  const _NotificationListBody({required this.staffId});
+  final String staffId;
+
+  @override
+  Widget build(BuildContext context) {
+    return StreamBuilder<List<Map<String, dynamic>>>(
+      stream: Supabase.instance.client
+          .from('staff_notifications')
+          .stream(primaryKey: ['id'])
+          .eq('staff_id', staffId)
+          .order('created_at', ascending: false),
+      builder: (context, snap) {
+        if (snap.connectionState == ConnectionState.waiting) {
+          return const Center(child: CircularProgressIndicator());
+        }
+        if (snap.hasError) {
+          return Center(child: Text('Error: ${snap.error}'));
+        }
+
+        final rows = snap.data ?? [];
+        if (rows.isEmpty) {
+          return const _EmptyNotificationView();
+        }
+
+        return ListView.builder(
+          padding: const EdgeInsets.fromLTRB(16, 16, 16, 24),
+          itemCount: rows.length,
+          itemBuilder: (context, index) {
+            final data = rows[index];
+            final id = data['id'] as String;
+
+            final title = (data['title'] ?? '').toString();
+            final message = (data['message'] ?? '').toString();
+            final type = (data['type'] ?? 'general').toString();
+            final read = data['is_read'] == true;
+
+            DateTime? created;
+            final createdRaw = data['created_at'];
+            if (createdRaw is String && createdRaw.isNotEmpty) {
+              created = DateTime.tryParse(createdRaw);
             }
-            if (snap.hasError) {
-              return Center(child: Text('Error: ${snap.error}'));
-            }
 
-            final docs = snap.data?.docs ?? [];
-            if (docs.isEmpty) {
-              return const _EmptyNotificationView();
-            }
+            return _NotificationTile(
+              title: title,
+              message: message,
+              type: type,
+              createdAt: created,
+              read: read,
+              onTap: () async {
+                // Mark as read
+                await Supabase.instance.client
+                    .from('staff_notifications')
+                    .update({'is_read': true})
+                    .eq('id', id);
 
-            return ListView.builder(
-              padding: const EdgeInsets.fromLTRB(16, 16, 16, 24),
-              itemCount: docs.length,
-              itemBuilder: (context, index) {
-                final doc = docs[index];
-                final data = doc.data();
+                if (!context.mounted) return;
 
-                final title = (data['title'] ?? '').toString();
-                final message = (data['message'] ?? '').toString();
-                final type = (data['type'] ?? 'general').toString();
-
-                // 🔴 support field baru `isRead` + fallback ke `read` lama
-                final read =
-                    (data['isRead'] ?? data['read']) == true;
-
-                DateTime? created;
-                final createdRaw = data['createdAt'];
-                if (createdRaw is Timestamp) {
-                  created = createdRaw.toDate();
-                }
-
-                return _NotificationTile(
+                // Show detail bottom sheet
+                _showNotificationDetailSheet(
+                  context: context,
                   title: title,
                   message: message,
                   type: type,
                   createdAt: created,
-                  read: read,
-                  onTap: () async {
-                    // Mark as read (dua-dua field supaya seragam)
-                    await doc.reference.update({
-                      'isRead': true,
-                      'read': true,
-                    });
-
-                    // Show bottom sheet + route button
-                    _showNotificationDetailSheet(
-                      context: context,
-                      title: title,
-                      message: message,
-                      type: type,
-                      createdAt: created,
-                    );
-                  },
                 );
               },
             );
           },
-        ),
-      ),
+        );
+      },
     );
   }
 
@@ -191,7 +201,7 @@ class NotificationPage extends StatelessWidget {
                 width: double.infinity,
                 child: FilledButton(
                   onPressed: () {
-                    Navigator.of(ctx).pop(); // tutup sheet
+                    Navigator.of(ctx).pop();
                     _openRelatedPage(context, type);
                   },
                   style: FilledButton.styleFrom(
@@ -238,7 +248,7 @@ class NotificationPage extends StatelessWidget {
         MaterialPageRoute(builder: (_) => const PayslipListPage()),
       );
     } else {
-      // default – stay on notification page
+      // default - stay on notification page
     }
   }
 }
@@ -339,7 +349,7 @@ class _NotificationTile extends StatelessWidget {
           child: Row(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              // Icon bulat
+              // Icon circle
               Container(
                 width: 40,
                 height: 40,
@@ -411,7 +421,7 @@ class _NotificationTile extends StatelessWidget {
   }
 }
 
-// ───────────────── Visual helper untuk type ─────────────────
+// ───────────────── Visual helper for type ─────────────────
 
 class _NotificationVisual {
   final IconData icon;
@@ -425,7 +435,6 @@ class _NotificationVisual {
   });
 }
 
-// Helper utk group semua type baru & lama
 bool _isLeaveType(String type) {
   return type == 'leave' ||
       type == 'leave_request' ||

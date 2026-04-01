@@ -1,535 +1,11 @@
-// lib/features/profile/full_profile_page.dart
+// lib/features/profile/edit_profile_page.dart
 import 'dart:io';
 
-import 'package:cloud_firestore/cloud_firestore.dart';
-import 'package:firebase_auth/firebase_auth.dart';
-import 'package:firebase_storage/firebase_storage.dart';
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 
-class FullProfilePage extends StatelessWidget {
-  const FullProfilePage({
-    super.key,
-    this.uid,
-    this.prefill,
-    this.readOnly = false,
-  });
-
-  /// Jika ada uid -> fetch Firestore; jika null -> guna prefill di bawah.
-  final String? uid;
-  final ProfilePrefill? prefill;
-  final bool readOnly;
-
-  @override
-  Widget build(BuildContext context) {
-    // Mode guest: tiada uid -> render statik
-    if (uid == null) {
-      final p = prefill ?? const ProfilePrefill();
-      return Scaffold(
-        backgroundColor: const Color(0xFFF5F7FB),
-        appBar: AppBar(
-          title: const Text('Staff Profile'),
-          backgroundColor: const Color(0xFFF5F7FB),
-          elevation: 0,
-          surfaceTintColor: Colors.transparent,
-        ),
-        body: _GuestBody(prefill: p, readOnly: true),
-      );
-    }
-
-    // Mode signed-in: stream Firestore
-    final docRef = FirebaseFirestore.instance.collection('users').doc(uid);
-    return Scaffold(
-      backgroundColor: const Color(0xFFF5F7FB),
-      appBar: AppBar(
-        title: const Text('Staff Profile'),
-        backgroundColor: const Color(0xFFF5F7FB),
-        elevation: 0,
-        surfaceTintColor: Colors.transparent,
-      ),
-      body: StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
-        stream: docRef.snapshots(),
-        builder: (context, snap) {
-          if (snap.connectionState == ConnectionState.waiting) {
-            return const Center(child: CircularProgressIndicator());
-          }
-          if (!snap.hasData || !snap.data!.exists) {
-            // fallback gunakan prefill jika ada
-            final p = prefill ?? const ProfilePrefill();
-            return _GuestBody(prefill: p, readOnly: true);
-          }
-
-          final data = snap.data!.data()!;
-          final authUser = FirebaseAuth.instance.currentUser;
-
-          final name = data['name'] as String? ??
-              data['fullName'] as String? ??
-              authUser?.displayName ??
-              'Unnamed Staff';
-          final email = data['email'] as String? ?? authUser?.email ?? '-';
-          final role = data['role'] as String? ?? 'staff';
-          final site =
-              data['siteName'] as String? ?? data['site'] as String? ?? '-';
-          final phone = data['phone'] as String? ?? '-';
-          final empId = data['employeeId'] as String? ??
-              data['staffId'] as String? ??
-              '-';
-          final dept = data['department'] as String? ?? '-';
-          final empType = data['employmentType'] as String? ?? '-';
-
-          final photo = data['photoUrl'] as String? ??
-              data['faceImageUrl'] as String? ??
-              authUser?.photoURL ??
-              'https://ui-avatars.com/api/?name=${Uri.encodeComponent(name)}&background=BAE6FD';
-
-          // joinDate boleh String atau Timestamp
-          String? joinDate;
-          final rawJoinDate = data['joinDate'];
-          if (rawJoinDate is String) {
-            joinDate = rawJoinDate;
-          } else if (rawJoinDate is Timestamp) {
-            final dt = rawJoinDate.toDate();
-            String two(int n) => n.toString().padLeft(2, '0');
-            joinDate = '${two(dt.day)}.${two(dt.month)}.${dt.year}';
-          }
-
-          // status: guna data['status'] kalau ada, kalau tak, derive dari active
-          String status;
-          final rawStatus = data['status'];
-          if (rawStatus is String && rawStatus.isNotEmpty) {
-            status = rawStatus;
-          } else if (data['active'] == false) {
-            status = 'Inactive';
-          } else {
-            status = 'Active';
-          }
-
-          return SingleChildScrollView(
-            padding: const EdgeInsets.fromLTRB(16, 12, 16, 24),
-            child: Column(
-              children: [
-                // ─── HEADER CARD ala iOS ────────────────────────────────
-                Hero(
-                  tag: 'avatar-hero',
-                  child: Container(
-                    width: double.infinity,
-                    padding: const EdgeInsets.all(16),
-                    decoration: BoxDecoration(
-                      gradient: const LinearGradient(
-                        colors: [
-                          Color(0xFF0EA5E9),
-                          Color(0xFF2563EB),
-                        ],
-                        begin: Alignment.topLeft,
-                        end: Alignment.bottomRight,
-                      ),
-                      borderRadius: BorderRadius.circular(24),
-                      boxShadow: const [
-                        BoxShadow(
-                          color: Color(0x330064B5),
-                          blurRadius: 18,
-                          offset: Offset(0, 10),
-                        ),
-                      ],
-                    ),
-                    child: Row(
-                      children: [
-                        CircleAvatar(
-                          radius: 32,
-                          backgroundImage: NetworkImage(photo),
-                        ),
-                        const SizedBox(width: 16),
-                        Expanded(
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              Text(
-                                name,
-                                style: const TextStyle(
-                                  color: Colors.white,
-                                  fontSize: 18,
-                                  fontWeight: FontWeight.w700,
-                                ),
-                                maxLines: 1,
-                                overflow: TextOverflow.ellipsis,
-                              ),
-                              const SizedBox(height: 4),
-                              Text(
-                                role.toLowerCase() == 'hr'
-                                    ? 'HR Admin Manager'
-                                    : 'staff',
-                                style: TextStyle(
-                                  color: Colors.white.withOpacity(0.9),
-                                  fontSize: 13,
-                                ),
-                              ),
-                              const SizedBox(height: 2),
-                              Text(
-                                site,
-                                style: TextStyle(
-                                  color: Colors.white.withOpacity(0.9),
-                                  fontSize: 12,
-                                ),
-                                maxLines: 1,
-                                overflow: TextOverflow.ellipsis,
-                              ),
-                            ],
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                ),
-
-                const SizedBox(height: 16),
-
-                // ─── INFO CARD ───────────────────────────────────────────
-                Container(
-                  width: double.infinity,
-                  padding:
-                  const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-                  decoration: BoxDecoration(
-                    color: Colors.white,
-                    borderRadius: BorderRadius.circular(20),
-                    boxShadow: const [
-                      BoxShadow(
-                        color: Color(0x14000000),
-                        blurRadius: 18,
-                        offset: Offset(0, 10),
-                      ),
-                    ],
-                  ),
-                  child: Column(
-                    children: [
-                      _InfoTile(
-                        icon: Icons.badge_outlined,
-                        label: 'Employee ID',
-                        value: empId,
-                      ),
-                      _InfoTile(
-                        icon: Icons.apartment_outlined,
-                        label: 'Department',
-                        value: dept,
-                      ),
-                      _InfoTile(
-                        icon: Icons.group_outlined,
-                        label: 'Employment Type',
-                        value: empType,
-                      ),
-                      _InfoTile(
-                        icon: Icons.email_outlined,
-                        label: 'Email',
-                        value: email,
-                      ),
-                      _InfoTile(
-                        icon: Icons.phone_outlined,
-                        label: 'Phone',
-                        value: phone,
-                      ),
-                      _InfoTile(
-                        icon: Icons.location_on_outlined,
-                        label: 'Site',
-                        value: site,
-                      ),
-                    ],
-                  ),
-                ),
-
-                const SizedBox(height: 12),
-
-                // joined + status (bold)
-                Align(
-                  alignment: Alignment.centerLeft,
-                  child: Padding(
-                    padding:
-                    const EdgeInsets.symmetric(horizontal: 4, vertical: 4),
-                    child: Text(
-                      [
-                        if (joinDate != null && joinDate.isNotEmpty)
-                          'Joined: $joinDate',
-                        if (status.isNotEmpty) 'Status: $status',
-                      ].join('   •   '),
-                      style: TextStyle(
-                        fontSize: 14,
-                        fontWeight: FontWeight.w700,
-                        color: Colors.grey.shade900,
-                      ),
-                    ),
-                  ),
-                ),
-
-                const SizedBox(height: 20),
-
-                // ─── ACTION BUTTONS (Edit + Sign out) ───────────────────
-                Row(
-                  children: [
-                    Expanded(
-                      child: OutlinedButton.icon(
-                        icon: const Icon(Icons.edit_outlined),
-                        label: const Text('Edit profile'),
-                        style: OutlinedButton.styleFrom(
-                          padding: const EdgeInsets.symmetric(vertical: 14),
-                          shape: RoundedRectangleBorder(
-                            borderRadius: BorderRadius.circular(14),
-                          ),
-                        ),
-                        onPressed: readOnly
-                            ? null
-                            : () {
-                          Navigator.of(context).push(
-                            MaterialPageRoute(
-                              builder: (_) => EditProfilePage(
-                                uid:
-                                uid!, // kita dah confirm atas: uid != null
-                                initialData:
-                                data, // data dari Firestore users/{uid}
-                              ),
-                            ),
-                          );
-                        },
-                      ),
-                    ),
-                    const SizedBox(width: 12),
-                    Expanded(
-                      child: ElevatedButton.icon(
-                        icon: const Icon(Icons.logout_rounded),
-                        label: const Text('Sign out'),
-                        style: ElevatedButton.styleFrom(
-                          padding: const EdgeInsets.symmetric(vertical: 14),
-                          shape: RoundedRectangleBorder(
-                            borderRadius: BorderRadius.circular(14),
-                          ),
-                          backgroundColor: const Color(0xFF2563EB),
-                        ),
-                        onPressed: () async {
-                          await FirebaseAuth.instance.signOut();
-                          if (context.mounted) {
-                            Navigator.of(context)
-                                .popUntil((route) => route.isFirst);
-                          }
-                        },
-                      ),
-                    ),
-                  ],
-                ),
-              ],
-            ),
-          );
-        },
-      ),
-    );
-  }
-}
-
-class _GuestBody extends StatelessWidget {
-  const _GuestBody({required this.prefill, required this.readOnly});
-  final ProfilePrefill prefill;
-  final bool readOnly;
-
-  @override
-  Widget build(BuildContext context) {
-    final photo = prefill.photoUrl ??
-        'https://ui-avatars.com/api/?name=${Uri.encodeComponent(prefill.name ?? "Guest")}&background=BAE6FD';
-
-    return SingleChildScrollView(
-      padding: const EdgeInsets.fromLTRB(16, 12, 16, 24),
-      child: Column(
-        children: [
-          Hero(
-            tag: 'avatar-hero',
-            child: Container(
-              width: double.infinity,
-              padding: const EdgeInsets.all(16),
-              decoration: BoxDecoration(
-                gradient: const LinearGradient(
-                  colors: [
-                    Color(0xFF0EA5E9),
-                    Color(0xFF2563EB),
-                  ],
-                  begin: Alignment.topLeft,
-                  end: Alignment.bottomRight,
-                ),
-                borderRadius: BorderRadius.circular(24),
-              ),
-              child: Row(
-                children: [
-                  CircleAvatar(
-                    radius: 32,
-                    backgroundImage: NetworkImage(photo),
-                  ),
-                  const SizedBox(width: 16),
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          prefill.name ?? 'Guest',
-                          style: const TextStyle(
-                            color: Colors.white,
-                            fontSize: 18,
-                            fontWeight: FontWeight.w700,
-                          ),
-                        ),
-                        const SizedBox(height: 4),
-                        Text(
-                          prefill.role ?? '-',
-                          style: TextStyle(
-                            color: Colors.white.withOpacity(0.9),
-                            fontSize: 13,
-                          ),
-                        ),
-                        const SizedBox(height: 2),
-                        Text(
-                          prefill.site ?? '-',
-                          style: TextStyle(
-                            color: Colors.white.withOpacity(0.9),
-                            fontSize: 12,
-                          ),
-                        ),
-                      ],
-                    ),
-                  )
-                ],
-              ),
-            ),
-          ),
-          const SizedBox(height: 16),
-          Container(
-            width: double.infinity,
-            padding:
-            const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-            decoration: BoxDecoration(
-              color: Colors.white,
-              borderRadius: BorderRadius.circular(20),
-            ),
-            child: Column(
-              children: [
-                _InfoTile(
-                  icon: Icons.email_outlined,
-                  label: 'Email',
-                  value: prefill.email ?? '-',
-                ),
-                _InfoTile(
-                  icon: Icons.location_on_outlined,
-                  label: 'Site',
-                  value: prefill.site ?? '-',
-                ),
-              ],
-            ),
-          ),
-          const SizedBox(height: 16),
-          if (!readOnly)
-            ElevatedButton.icon(
-              icon: const Icon(Icons.logout),
-              label: const Text('Sign out'),
-              style: ElevatedButton.styleFrom(
-                backgroundColor: const Color(0xFF2563EB),
-                padding: const EdgeInsets.symmetric(vertical: 14),
-                shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(14),
-                ),
-              ),
-              onPressed: () async {
-                await FirebaseAuth.instance.signOut();
-                if (context.mounted) {
-                  Navigator.of(context).popUntil((r) => r.isFirst);
-                }
-              },
-            ),
-          if (readOnly)
-            const Padding(
-              padding: EdgeInsets.only(top: 8.0),
-              child: Text(
-                'Viewing local profile (not signed in).',
-                style: TextStyle(color: Colors.grey),
-              ),
-            ),
-        ],
-      ),
-    );
-  }
-}
-
-class _InfoTile extends StatelessWidget {
-  const _InfoTile({
-    required this.icon,
-    required this.label,
-    required this.value,
-  });
-
-  final IconData icon;
-  final String label;
-  final String value;
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      margin: const EdgeInsets.only(bottom: 8),
-      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 10),
-      decoration: BoxDecoration(
-        color: const Color(0xFFF7FAFC),
-        borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: const Color(0xFFE2E8F0)),
-      ),
-      child: Row(
-        children: [
-          Container(
-            width: 32,
-            height: 32,
-            decoration: BoxDecoration(
-              color: const Color(0xFFE5ECF5),
-              borderRadius: BorderRadius.circular(10),
-            ),
-            child: Icon(icon, size: 18, color: Colors.grey.shade700),
-          ),
-          const SizedBox(width: 12),
-          Expanded(
-            child: Text(
-              label,
-              style: const TextStyle(
-                color: Colors.black54,
-                fontSize: 13,
-              ),
-            ),
-          ),
-          const SizedBox(width: 8),
-          Flexible(
-            flex: 2,
-            child: Text(
-              value,
-              textAlign: TextAlign.right,
-              style: const TextStyle(
-                fontWeight: FontWeight.w600,
-                fontSize: 13,
-              ),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-/// Data prefill bila user belum sign-in
-class ProfilePrefill {
-  final String? name;
-  final String? email;
-  final String? role;
-  final String? site;
-  final String? photoUrl;
-
-  const ProfilePrefill({
-    this.name,
-    this.email,
-    this.role,
-    this.site,
-    this.photoUrl,
-  });
-}
-
-// ======================================================================
-//                           EDIT PROFILE PAGE
-// ======================================================================
+import '../../services/supabase_service.dart';
 
 class EditProfilePage extends StatefulWidget {
   const EditProfilePage({
@@ -565,16 +41,16 @@ class _EditProfilePageState extends State<EditProfilePage> {
     final d = widget.initialData;
 
     _nameCtrl = TextEditingController(
-        text: (d['name'] ?? d['fullName'] ?? '') as String);
+        text: (d['full_name'] ?? d['name'] ?? d['fullName'] ?? '') as String);
     _phoneCtrl =
         TextEditingController(text: (d['phone'] ?? '') as String);
     _deptCtrl =
         TextEditingController(text: (d['department'] ?? '') as String);
     _siteCtrl = TextEditingController(
-        text: (d['siteName'] ?? d['site'] ?? '') as String);
+        text: (d['site'] ?? d['siteName'] ?? '') as String);
 
-    // Employment type: pastikan String dan bukan kosong; kalau tak, biar null
-    final rawEmpType = d['employmentType'];
+    // Employment type: ensure String and not empty; otherwise null
+    final rawEmpType = d['employment_type'] ?? d['employmentType'];
     if (rawEmpType is String && rawEmpType.isNotEmpty) {
       _employmentType = rawEmpType;
     } else {
@@ -582,7 +58,7 @@ class _EditProfilePageState extends State<EditProfilePage> {
     }
 
     _photoUrl =
-    (d['photoUrl'] ?? d['faceImageUrl'] ?? '') as String?;
+    (d['photo_url'] ?? d['profile_photo_url'] ?? d['photoUrl'] ?? '') as String?;
   }
 
   @override
@@ -611,13 +87,23 @@ class _EditProfilePageState extends State<EditProfilePage> {
   Future<String?> _uploadPhotoIfNeeded() async {
     if (_pickedImage == null) return _photoUrl;
 
-    final ref = FirebaseStorage.instance
-        .ref()
-        .child('staff_profile_photos')
-        .child('${widget.uid}.jpg');
+    final storage = Supabase.instance.client.storage.from('smartbayu');
+    final filePath = 'profile-photos/${widget.uid}.jpg';
+    final bytes = await _pickedImage!.readAsBytes();
 
-    await ref.putFile(_pickedImage!);
-    return await ref.getDownloadURL();
+    // Upload (upsert to overwrite existing)
+    await storage.uploadBinary(
+      filePath,
+      bytes,
+      fileOptions: const FileOptions(
+        contentType: 'image/jpeg',
+        upsert: true,
+      ),
+    );
+
+    // Get public URL
+    final publicUrl = storage.getPublicUrl(filePath);
+    return publicUrl;
   }
 
   Future<void> _save() async {
@@ -628,35 +114,29 @@ class _EditProfilePageState extends State<EditProfilePage> {
     try {
       final newPhotoUrl = await _uploadPhotoIfNeeded();
 
-      final docRef =
-      FirebaseFirestore.instance.collection('users').doc(widget.uid);
-
-      await docRef.update({
-        'name': _nameCtrl.text.trim(),
+      // Update staff table in Supabase
+      await Supabase.instance.client
+          .from('staff')
+          .update({
+        'full_name': _nameCtrl.text.trim(),
         'phone': _phoneCtrl.text.trim(),
         'department': _deptCtrl.text.trim(),
-        'employmentType': _employmentType ?? '',
-        'siteName': _siteCtrl.text.trim(),
+        'employment_type': _employmentType ?? '',
+        'site': _siteCtrl.text.trim(),
         if (newPhotoUrl != null && newPhotoUrl.isNotEmpty)
-          'photoUrl': newPhotoUrl,
-        // rekod bila profile di-update
-        'updatedAt': FieldValue.serverTimestamp(),
-      });
+          'photo_url': newPhotoUrl,
+        'updated_at': DateTime.now().toUtc().toIso8601String(),
+      })
+          .eq('id', widget.uid);
 
-      // Update FirebaseAuth display name & photo jika user sekarang sama uid
-      final authUser = FirebaseAuth.instance.currentUser;
-      if (authUser != null && authUser.uid == widget.uid) {
-        await authUser.updateDisplayName(_nameCtrl.text.trim());
-        if (newPhotoUrl != null && newPhotoUrl.isNotEmpty) {
-          await authUser.updatePhotoURL(newPhotoUrl);
-        }
-      }
+      // Refresh cached staff data in SupabaseService
+      await SupabaseService.instance.refreshStaffData();
 
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Profile updated')),
       );
-      Navigator.of(context).pop(); // kembali ke FullProfilePage
+      Navigator.of(context).pop();
     } catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
@@ -726,7 +206,7 @@ class _EditProfilePageState extends State<EditProfilePage> {
             key: _formKey,
             child: Column(
               children: [
-                // HEADER avatar + nama
+                // HEADER avatar + name
                 Container(
                   width: double.infinity,
                   padding: const EdgeInsets.symmetric(
@@ -937,7 +417,7 @@ class _DropdownField<T> extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    // pastikan value valid; kalau tak match dengan mana-mana item, biar null
+    // Ensure value is valid; if not in items list, set to null
     final T? safeValue = items.contains(value) ? value : null;
 
     return Container(

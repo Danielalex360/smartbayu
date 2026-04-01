@@ -1,11 +1,10 @@
 // lib/features/hr/hr_staff_form_page.dart
 import 'dart:io';
-
-import 'package:cloud_firestore/cloud_firestore.dart';
-import 'package:firebase_auth/firebase_auth.dart';
-import 'package:firebase_storage/firebase_storage.dart';
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
+
+import '../../services/supabase_service.dart';
 
 class HrStaffFormPage extends StatefulWidget {
   const HrStaffFormPage({
@@ -30,14 +29,12 @@ class _HrStaffFormPageState extends State<HrStaffFormPage> {
   final _emailCtrl = TextEditingController();
   final _staffIdCtrl = TextEditingController();
   final _positionCtrl = TextEditingController();
-  final _siteCtrl = TextEditingController();
   final _noteCtrl = TextEditingController();
 
   String _role = 'staff'; // 'staff' / 'hr'
   String _status = 'active'; // 'active' / 'inactive'
   DateTime? _joinDate;
 
-  // 🔹 Employment Type – HR sahaja yang set
   String _employmentType = 'Full-time';
   static const _employmentTypeOptions = [
     'Full-time',
@@ -60,72 +57,46 @@ class _HrStaffFormPageState extends State<HrStaffFormPage> {
     final data = widget.initialData ?? {};
 
     // ------- Text fields -------
-    _nameCtrl.text = (data['fullName'] ?? data['name'] ?? '').toString();
+    _nameCtrl.text = (data['full_name'] ?? data['name'] ?? '').toString();
     _emailCtrl.text = (data['email'] ?? '').toString();
-    _staffIdCtrl.text =
-        (data['staffId'] ?? data['employeeId'] ?? '').toString();
-    _positionCtrl.text =
-        (data['position'] ?? data['roleTitle'] ?? '').toString();
-    _siteCtrl.text = (data['siteName'] ?? data['site'] ?? '').toString();
+    _staffIdCtrl.text = (data['staff_number'] ?? data['employeeId'] ?? '').toString();
+    _positionCtrl.text = (data['position'] ?? '').toString();
     _noteCtrl.text = (data['note'] ?? '').toString();
 
     // ------- Role (normalise to lowercase) -------
-    final rawRole = data['role'];
+    final rawRole = data['app_role'] ?? data['role'];
     if (rawRole is String && rawRole.isNotEmpty) {
-      _role = rawRole.toLowerCase();
-    } else if (data['department'] == 'Human Resource' ||
-        data['isHr'] == true) {
+      final r = rawRole.toLowerCase();
+      _role = (r == 'hr' || r == 'admin' || r == 'manager') ? 'hr' : 'staff';
+    } else if (data['department'] == 'Human Resource') {
       _role = 'hr';
     } else {
       _role = 'staff';
     }
 
-    // ------- Status (normalise to lowercase) -------
-    final rawStatus = data['status'];
-    if (rawStatus is String && rawStatus.isNotEmpty) {
-      _status = rawStatus.toLowerCase();
-    } else if (data['active'] == false) {
+    // ------- Status -------
+    if (data['is_active'] == false) {
       _status = 'inactive';
     } else {
       _status = 'active';
     }
 
-    // ------- Employment Type (HR set) -------
-    final rawEmpType = data['employmentType'];
+    // ------- Employment Type -------
+    final rawEmpType = data['employment_type'] ?? data['employmentType'];
     if (rawEmpType is String &&
         rawEmpType.isNotEmpty &&
         _employmentTypeOptions.contains(rawEmpType)) {
       _employmentType = rawEmpType;
     }
 
-    // ------- Join Date (Timestamp atau String "dd.MM.yyyy") -------
-    final jd = data['joinDate'];
-    if (jd is Timestamp) {
-      _joinDate = jd.toDate();
-    } else if (jd is String) {
-      _joinDate = _parseJoinDateString(jd);
-    } else if (data['joinDateString'] != null) {
-      _joinDate =
-          _parseJoinDateString(data['joinDateString'].toString());
+    // ------- Join Date (ISO 8601 string) -------
+    final jd = data['date_joined'] ?? data['joinDate'];
+    if (jd is String && jd.isNotEmpty) {
+      _joinDate = DateTime.tryParse(jd);
     }
 
     // ------- Photo -------
-    _photoUrl = (data['photoUrl'] ?? data['faceImageUrl'] ?? '').toString();
-  }
-
-  DateTime? _parseJoinDateString(String s) {
-    try {
-      final parts = s.split('.');
-      if (parts.length == 3) {
-        final d = int.tryParse(parts[0]);
-        final m = int.tryParse(parts[1]);
-        final y = int.tryParse(parts[2]);
-        if (d != null && m != null && y != null) {
-          return DateTime(y, m, d);
-        }
-      }
-    } catch (_) {}
-    return null;
+    _photoUrl = (data['photo_url'] ?? data['profile_photo_url'] ?? '').toString();
   }
 
   @override
@@ -134,7 +105,6 @@ class _HrStaffFormPageState extends State<HrStaffFormPage> {
     _emailCtrl.dispose();
     _staffIdCtrl.dispose();
     _positionCtrl.dispose();
-    _siteCtrl.dispose();
     _noteCtrl.dispose();
     super.dispose();
   }
@@ -165,17 +135,28 @@ class _HrStaffFormPageState extends State<HrStaffFormPage> {
     }
   }
 
-  Future<String?> _uploadAvatar(String docId) async {
+  Future<String?> _uploadAvatar(String staffId) async {
     if (_pickedImageFile == null) return _photoUrl;
 
     try {
-      final ref =
-      FirebaseStorage.instance.ref('profile_photos/$docId.jpg');
-      await ref.putFile(
-        _pickedImageFile!,
-        SettableMetadata(contentType: 'image/jpeg'),
+      final bytes = await _pickedImageFile!.readAsBytes();
+      final path = 'profile_photos/$staffId.jpg';
+
+      await Supabase.instance.client.storage
+          .from('smartbayu')
+          .uploadBinary(
+        path,
+        bytes,
+        fileOptions: const FileOptions(
+          contentType: 'image/jpeg',
+          upsert: true,
+        ),
       );
-      final url = await ref.getDownloadURL();
+
+      final url = Supabase.instance.client.storage
+          .from('smartbayu')
+          .getPublicUrl(path);
+
       return url;
     } catch (e) {
       if (!mounted) return _photoUrl;
@@ -186,98 +167,60 @@ class _HrStaffFormPageState extends State<HrStaffFormPage> {
     }
   }
 
-  String? _joinDateString() {
-    if (_joinDate == null) return null;
-    final d = _joinDate!;
-    final dd = d.day.toString().padLeft(2, '0');
-    final mm = d.month.toString().padLeft(2, '0');
-    final yy = d.year.toString();
-    return '$dd.$mm.$yy';
-  }
-
   Future<void> _save() async {
     if (!_formKey.currentState!.validate()) return;
 
     setState(() => _saving = true);
 
     try {
-      final usersRef = FirebaseFirestore.instance.collection('users');
+      final companyId = SupabaseService.instance.companyId;
+      final supabase = Supabase.instance.client;
 
       if (widget.isEdit) {
         // ===================== UPDATE STAFF =====================
         final docId = widget.staffDocId!;
-        final currentDoc = await usersRef.doc(docId).get();
-        final existing = currentDoc.data() ?? {};
 
         final photoUrl = await _uploadAvatar(docId);
         final bool isActive = _status == 'active';
 
         final data = <String, dynamic>{
-          // nama
-          'fullName': _nameCtrl.text.trim(),
-          'name': _nameCtrl.text.trim(),
-
-          // email
+          'full_name': _nameCtrl.text.trim(),
           'email': _emailCtrl.text.trim(),
-
-          // id staff
-          'staffId': _staffIdCtrl.text.trim(),
-          'employeeId': _staffIdCtrl.text.trim().isEmpty
-              ? existing['employeeId']
-              : _staffIdCtrl.text.trim(),
-
-          // jawatan
+          'staff_number': _staffIdCtrl.text.trim(),
           'position': _positionCtrl.text.trim(),
-          'roleTitle': _positionCtrl.text.trim(),
-
-          // site
-          'siteName': _siteCtrl.text.trim(),
-          'site': _siteCtrl.text.trim(),
-
-          // role & department
-          'role': _role,
+          'app_role': _role,
           'department': _role == 'hr'
               ? 'Human Resource'
-              : (existing['department'] ?? 'General'),
-
-          // employment type (HR set)
-          'employmentType': _employmentType,
-
-          // status / active
-          'status': _status, // 'active' / 'inactive'
-          'active': isActive,
-
-          // join date
+              : (widget.initialData?['department'] ?? 'General'),
+          'employment_type': _employmentType,
+          'is_active': isActive,
           if (_joinDate != null)
-            'joinDate': Timestamp.fromDate(_joinDate!),
-          if (_joinDate != null) 'joinDateString': _joinDateString(),
-
-          // note
+            'date_joined': _joinDate!.toIso8601String().split('T').first,
           'note': _noteCtrl.text.trim(),
-
-          // photo
-          if (photoUrl != null) 'photoUrl': photoUrl,
-
-          'updatedAt': FieldValue.serverTimestamp(),
+          if (photoUrl != null && photoUrl.isNotEmpty)
+            'photo_url': photoUrl,
         };
 
-        await usersRef.doc(docId).set(data, SetOptions(merge: true));
+        await supabase
+            .from('staff')
+            .update(data)
+            .eq('id', docId);
       } else {
         // ===================== CREATE STAFF (NEW) =====================
         final bool isActive = _status == 'active';
         final email = _emailCtrl.text.trim();
 
-        // 1) create user dalam Firebase Auth (default password 123456)
-        UserCredential userCred;
+        // 1) Sign up user in Supabase Auth (default password 123456)
+        AuthResponse authResponse;
         try {
-          userCred = await FirebaseAuth.instance
-              .createUserWithEmailAndPassword(
+          authResponse = await supabase.auth.signUp(
             email: email,
             password: '123456',
           );
-        } on FirebaseAuthException catch (e) {
+        } on AuthException catch (e) {
           String msg = 'Failed to create staff account.';
-          if (e.code == 'email-already-in-use') {
+          if (e.message.contains('already registered') ||
+              e.message.contains('already been registered')) {
             msg = 'Email already in use. Please use another email.';
           }
           if (!mounted) return;
@@ -288,49 +231,55 @@ class _HrStaffFormPageState extends State<HrStaffFormPage> {
           return;
         }
 
-        final staffUid = userCred.user!.uid;
+        final newUserId = authResponse.user?.id;
+        if (newUserId == null) {
+          if (!mounted) return;
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('Failed to create user account.')),
+          );
+          setState(() => _saving = false);
+          return;
+        }
 
-        // 2) base data untuk Firestore
-        final baseData = <String, dynamic>{
-          'uid': staffUid,
-          'fullName': _nameCtrl.text.trim(),
-          'name': _nameCtrl.text.trim(),
+        // 2) Insert staff record
+        final staffData = <String, dynamic>{
+          'user_id': newUserId,
+          'full_name': _nameCtrl.text.trim(),
           'email': email,
-          'staffId': _staffIdCtrl.text.trim(),
-          'employeeId': _staffIdCtrl.text.trim(),
+          'staff_number': _staffIdCtrl.text.trim(),
           'position': _positionCtrl.text.trim(),
-          'roleTitle': _positionCtrl.text.trim(),
-          'siteName': _siteCtrl.text.trim(),
-          'site': _siteCtrl.text.trim(),
-          'role': _role, // 'staff' / 'hr'
+          'app_role': _role,
           'department': _role == 'hr' ? 'Human Resource' : 'General',
-
-          // employment type
-          'employmentType': _employmentType,
-
-          'status': _status, // 'active' / 'inactive'
-          'active': isActive,
+          'employment_type': _employmentType,
+          'is_active': isActive,
+          'company_id': companyId,
           if (_joinDate != null)
-            'joinDate': Timestamp.fromDate(_joinDate!),
-          if (_joinDate != null) 'joinDateString': _joinDateString(),
+            'date_joined': _joinDate!.toIso8601String().split('T').first,
           'note': _noteCtrl.text.trim(),
-          'hasDefaultPassword': true, // optional flag
-          'createdAt': FieldValue.serverTimestamp(),
-          'updatedAt': FieldValue.serverTimestamp(),
         };
 
-        // 3) simpan doc 'users/{uid}'
-        final docRef = usersRef.doc(staffUid);
-        await docRef.set(baseData);
+        final insertResult = await supabase
+            .from('staff')
+            .insert(staffData)
+            .select('id')
+            .single();
 
-        // 4) upload avatar kalau ada
+        final newStaffId = insertResult['id'] as String;
+
+        // 3) Upload avatar if picked
         if (_pickedImageFile != null) {
-          final photoUrl = await _uploadAvatar(staffUid);
-          await docRef.set(
-            {'photoUrl': photoUrl},
-            SetOptions(merge: true),
-          );
+          final photoUrl = await _uploadAvatar(newStaffId);
+          if (photoUrl != null && photoUrl.isNotEmpty) {
+            await supabase
+                .from('staff')
+                .update({'photo_url': photoUrl})
+                .eq('id', newStaffId);
+          }
         }
+
+        // 4) Sign back in as the HR user (signUp logs out the current session)
+        // Re-authenticate as the current HR user
+        await SupabaseService.instance.loadUserContext();
       }
 
       if (!mounted) return;
@@ -495,17 +444,6 @@ class _HrStaffFormPageState extends State<HrStaffFormPage> {
                     ),
                     const SizedBox(height: 12),
 
-                    // Site / Location
-                    TextFormField(
-                      controller: _siteCtrl,
-                      decoration: const InputDecoration(
-                        labelText: 'Site / Location',
-                        prefixIcon: Icon(Icons.location_city),
-                        border: OutlineInputBorder(),
-                      ),
-                    ),
-                    const SizedBox(height: 12),
-
                     // Role + Status
                     Row(
                       children: [
@@ -560,7 +498,7 @@ class _HrStaffFormPageState extends State<HrStaffFormPage> {
                     ),
                     const SizedBox(height: 12),
 
-                    // Employment Type (HR sahaja)
+                    // Employment Type
                     DropdownButtonFormField<String>(
                       value: _employmentType,
                       decoration: const InputDecoration(

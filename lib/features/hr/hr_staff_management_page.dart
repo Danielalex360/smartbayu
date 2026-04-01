@@ -1,9 +1,10 @@
 // lib/features/hr/hr_staff_management_page.dart
 
-import 'package:cloud_firestore/cloud_firestore.dart';
-import 'package:firebase_storage/firebase_storage.dart';
 import 'package:flutter/material.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 
+import '../../services/supabase_service.dart';
+import '../../services/company_service.dart';
 import 'hr_staff_form_page.dart';
 
 class HrStaffManagementPage extends StatefulWidget {
@@ -18,7 +19,15 @@ class _HrStaffManagementPageState extends State<HrStaffManagementPage> {
 
   String _roleFilter = 'all';   // 'all' | 'staff' | 'hr'
   String _statusFilter = 'all'; // 'all' | 'active' | 'inactive'
-  String _siteFilter = 'All';   // 'All' | specific site
+
+  List<Map<String, dynamic>> _allStaff = [];
+  bool _loading = true;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadStaff();
+  }
 
   @override
   void dispose() {
@@ -26,20 +35,39 @@ class _HrStaffManagementPageState extends State<HrStaffManagementPage> {
     super.dispose();
   }
 
-  // Helper: ambil URL gambar staff dari pelbagai kemungkinan field
+  Future<void> _loadStaff() async {
+    try {
+      final companyId = SupabaseService.instance.companyId;
+      if (companyId == null) return;
+
+      final rows = await Supabase.instance.client
+          .from('staff')
+          .select()
+          .eq('company_id', companyId)
+          .order('full_name', ascending: true);
+
+      if (mounted) {
+        setState(() {
+          _allStaff = List<Map<String, dynamic>>.from(rows);
+          _loading = false;
+        });
+      }
+    } catch (e) {
+      if (mounted) {
+        setState(() => _loading = false);
+      }
+      debugPrint('Error loading staff: $e');
+    }
+  }
+
   String _getPhotoUrl(Map<String, dynamic> data) {
-    final dynamic url = data['photoUrl'] ??
-        data['photourl'] ??
-        data['photoURL'] ??
-        data['faceImageUrl'] ??
-        data['imageUrl'] ??
-        data['avatarUrl'] ??
-        data['profilePic'];
+    final dynamic url = data['photo_url'] ??
+        data['profile_photo_url'];
     return (url ?? '').toString();
   }
 
   Future<void> _deleteStaff(
-      String docId, {
+      String staffId, {
         String? name,
         String? photoUrl,
       }) async {
@@ -68,15 +96,26 @@ class _HrStaffManagementPageState extends State<HrStaffManagementPage> {
     if (confirmed != true) return;
 
     try {
-      final usersRef = FirebaseFirestore.instance.collection('users');
-      await usersRef.doc(docId).delete();
+      await Supabase.instance.client
+          .from('staff')
+          .delete()
+          .eq('id', staffId);
 
-      if (photoUrl != null && photoUrl.startsWith('http')) {
+      // Try to delete photo from storage if exists
+      if (photoUrl != null && photoUrl.contains('smartbayu')) {
         try {
-          final ref = FirebaseStorage.instance.refFromURL(photoUrl);
-          await ref.delete();
+          // Extract path from URL
+          final uri = Uri.parse(photoUrl);
+          final pathSegments = uri.pathSegments;
+          final bucketIndex = pathSegments.indexOf('smartbayu');
+          if (bucketIndex >= 0 && bucketIndex < pathSegments.length - 1) {
+            final storagePath = pathSegments.sublist(bucketIndex + 1).join('/');
+            await Supabase.instance.client.storage
+                .from('smartbayu')
+                .remove([storagePath]);
+          }
         } catch (_) {
-          // tak apa kalau gagal delete gambar
+          // ignore storage deletion failures
         }
       }
 
@@ -84,6 +123,7 @@ class _HrStaffManagementPageState extends State<HrStaffManagementPage> {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Staff deleted.')),
       );
+      _loadStaff(); // refresh
     } catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
@@ -94,8 +134,6 @@ class _HrStaffManagementPageState extends State<HrStaffManagementPage> {
 
   @override
   Widget build(BuildContext context) {
-    final usersRef = FirebaseFirestore.instance.collection('users');
-
     return Scaffold(
       backgroundColor: const Color(0xFFF5F7FB),
       appBar: AppBar(
@@ -128,7 +166,7 @@ class _HrStaffManagementPageState extends State<HrStaffManagementPage> {
                   TextField(
                     controller: _searchCtrl,
                     decoration: InputDecoration(
-                      hintText: 'Search by name, email or site…',
+                      hintText: 'Search by name or email...',
                       prefixIcon: const Icon(Icons.search),
                       border: OutlineInputBorder(
                         borderRadius: BorderRadius.circular(14),
@@ -204,52 +242,6 @@ class _HrStaffManagementPageState extends State<HrStaffManagementPage> {
                       ),
                     ],
                   ),
-
-                  const SizedBox(height: 8),
-
-                  // Site filter – ambil list site dari data
-                  StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
-                    stream: usersRef.snapshots(),
-                    builder: (context, snapshot) {
-                      final docs = snapshot.data?.docs ?? [];
-                      final sites = <String>{'All'};
-                      for (final d in docs) {
-                        final data = d.data();
-                        final site = (data['siteName'] ??
-                            data['site'] ??
-                            '')
-                            .toString();
-                        if (site.isNotEmpty) sites.add(site);
-                      }
-                      final siteList = sites.toList()..sort();
-
-                      if (!siteList.contains(_siteFilter)) {
-                        _siteFilter = 'All';
-                      }
-
-                      return DropdownButtonFormField<String>(
-                        value: _siteFilter,
-                        decoration: const InputDecoration(
-                          labelText: 'Site',
-                          border: OutlineInputBorder(),
-                          isDense: true,
-                        ),
-                        items: siteList
-                            .map(
-                              (s) => DropdownMenuItem(
-                            value: s,
-                            child: Text(s == 'All' ? 'All sites' : s),
-                          ),
-                        )
-                            .toList(),
-                        onChanged: (v) {
-                          if (v != null) {
-                            setState(() => _siteFilter = v);
-                          }
-                        },
-                      );
-                    },
-                  ),
                 ],
               ),
             ),
@@ -257,323 +249,274 @@ class _HrStaffManagementPageState extends State<HrStaffManagementPage> {
 
           // ─── STAFF LIST ──────────────────────────────────────────────────────
           Expanded(
-            child: StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
-              stream:
-              usersRef.orderBy('name', descending: false).snapshots(),
-              builder: (context, snapshot) {
-                if (snapshot.connectionState == ConnectionState.waiting) {
-                  return const Center(child: CircularProgressIndicator());
-                }
-                if (snapshot.hasError) {
-                  return Center(
-                    child: Text('Error loading staff: ${snapshot.error}'),
-                  );
-                }
-
-                final docs = snapshot.data?.docs ?? [];
-                final q = _searchCtrl.text.trim().toLowerCase();
-
-                final filtered = docs.where((doc) {
-                  final data = doc.data();
-
-                  final name = (data['fullName'] ??
-                      data['name'] ??
-                      data['displayName'] ??
-                      'Unnamed')
-                      .toString();
-                  final email = (data['email'] ?? '-').toString();
-                  final site = (data['siteName'] ??
-                      data['site'] ??
-                      'Bayu Lestari Resort Island')
-                      .toString();
-
-                  final position =
-                  (data['position'] ?? data['roleTitle'] ?? '')
-                      .toString();
-
-                  // --- determine role type (hr/staff) consistently ---
-                  final rawRole = (data['role'] ?? '').toString().toLowerCase();
-                  final department =
-                  (data['department'] ?? '').toString().toLowerCase();
-                  final isHrFlag = rawRole == 'hr' ||
-                      data['isHr'] == true ||
-                      department.contains('human resource') ||
-                      position.toLowerCase().contains('hr');
-
-                  final roleType = isHrFlag ? 'hr' : 'staff';
-
-                  final boolActive = (data['active'] == true);
-                  final status = (data['status'] ??
-                      (boolActive ? 'active' : 'inactive'))
-                      .toString()
-                      .toLowerCase();
-
-                  // --- Search filter ---
-                  final nameL = name.toLowerCase();
-                  final emailL = email.toLowerCase();
-                  final siteL = site.toLowerCase();
-                  if (q.isNotEmpty &&
-                      !nameL.contains(q) &&
-                      !emailL.contains(q) &&
-                      !siteL.contains(q)) {
-                    return false;
-                  }
-
-                  // --- Role filter ---
-                  if (_roleFilter != 'all' && roleType != _roleFilter) {
-                    return false;
-                  }
-
-                  // --- Status filter ---
-                  if (_statusFilter != 'all' &&
-                      status != _statusFilter.toLowerCase()) {
-                    return false;
-                  }
-
-                  // --- Site filter ---
-                  if (_siteFilter != 'All' && site != _siteFilter) {
-                    return false;
-                  }
-
-                  return true;
-                }).toList();
-
-                if (filtered.isEmpty) {
-                  return const Center(
-                    child: Text('No staff found.'),
-                  );
-                }
-
-                return ListView.separated(
-                  padding: const EdgeInsets.fromLTRB(16, 4, 16, 16),
-                  itemCount: filtered.length,
-                  separatorBuilder: (_, __) => const SizedBox(height: 6),
-                  itemBuilder: (context, index) {
-                    final doc = filtered[index];
-                    final data = doc.data();
-
-                    final name = (data['fullName'] ??
-                        data['name'] ??
-                        data['displayName'] ??
-                        'Unnamed')
-                        .toString();
-                    final email = (data['email'] ?? '-').toString();
-                    final siteName = (data['siteName'] ??
-                        data['site'] ??
-                        'Bayu Lestari Resort Island')
-                        .toString();
-                    final staffId =
-                    (data['staffId'] ?? data['employeeId'] ?? '')
-                        .toString();
-                    final position =
-                    (data['position'] ?? data['roleTitle'] ?? '')
-                        .toString();
-
-                    final rawRole =
-                    (data['role'] ?? '').toString().toLowerCase();
-                    final department =
-                    (data['department'] ?? '').toString().toLowerCase();
-                    final isHrFlag = rawRole == 'hr' ||
-                        data['isHr'] == true ||
-                        department.contains('human resource') ||
-                        position.toLowerCase().contains('hr');
-
-                    final roleLabel = isHrFlag ? 'HR' : 'STAFF';
-
-                    final boolActive = (data['active'] == true);
-                    final status = (data['status'] ??
-                        (boolActive ? 'active' : 'inactive'))
-                        .toString()
-                        .toLowerCase();
-
-                    final photoUrl = _getPhotoUrl(data);
-                    final isActive = status.startsWith('a');
-
-                    return InkWell(
-                      onTap: () {
-                        Navigator.push(
-                          context,
-                          MaterialPageRoute(
-                            builder: (_) => HrStaffFormPage(
-                              staffDocId: doc.id,
-                              initialData: data,
-                            ),
-                          ),
-                        );
-                      },
-                      borderRadius: BorderRadius.circular(18),
-                      child: Container(
-                        margin: const EdgeInsets.symmetric(vertical: 6),
-                        padding: const EdgeInsets.all(14),
-                        decoration: BoxDecoration(
-                          color: Colors.white,
-                          borderRadius: BorderRadius.circular(18),
-                          boxShadow: [
-                            BoxShadow(
-                              color: Colors.black.withOpacity(0.06),
-                              blurRadius: 10,
-                              offset: const Offset(0, 4),
-                            ),
-                          ],
-                        ),
-                        child: Row(
-                          crossAxisAlignment: CrossAxisAlignment.center,
-                          children: [
-                            // Avatar
-                            CircleAvatar(
-                              radius: 26,
-                              backgroundColor: Colors.blueGrey.shade100,
-                              backgroundImage: photoUrl.isNotEmpty
-                                  ? NetworkImage(photoUrl)
-                                  : null,
-                              child: photoUrl.isEmpty
-                                  ? Text(
-                                name.isNotEmpty
-                                    ? name[0].toUpperCase()
-                                    : '?',
-                                style: const TextStyle(
-                                  fontWeight: FontWeight.bold,
-                                  fontSize: 18,
-                                ),
-                              )
-                                  : null,
-                            ),
-                            const SizedBox(width: 14),
-
-                            // Main text
-                            Expanded(
-                              child: Column(
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                mainAxisSize: MainAxisSize.min,
-                                children: [
-                                  Text(
-                                    name,
-                                    style: const TextStyle(
-                                      fontWeight: FontWeight.w600,
-                                      fontSize: 16,
-                                    ),
-                                    maxLines: 1,
-                                    overflow: TextOverflow.ellipsis,
-                                  ),
-                                  const SizedBox(height: 4),
-                                  Text(
-                                    email,
-                                    style: const TextStyle(
-                                      fontSize: 13,
-                                      color: Colors.black87,
-                                    ),
-                                    maxLines: 1,
-                                    overflow: TextOverflow.ellipsis,
-                                  ),
-                                  const SizedBox(height: 3),
-                                  if (siteName.isNotEmpty)
-                                    Text(
-                                      siteName,
-                                      style: const TextStyle(
-                                        fontSize: 12,
-                                        color: Colors.black54,
-                                      ),
-                                      maxLines: 1,
-                                      overflow: TextOverflow.ellipsis,
-                                    ),
-                                  const SizedBox(height: 3),
-                                  Text(
-                                    [
-                                      if (staffId.isNotEmpty) '#$staffId',
-                                      if (position.isNotEmpty) position,
-                                      roleLabel,
-                                    ].join(' • '),
-                                    style: const TextStyle(
-                                      fontSize: 12,
-                                      color: Colors.black54,
-                                    ),
-                                    maxLines: 1,
-                                    overflow: TextOverflow.ellipsis,
-                                  ),
-                                ],
-                              ),
-                            ),
-                            const SizedBox(width: 10),
-
-                            // Status + menu
-                            Column(
-                              mainAxisSize: MainAxisSize.min,
-                              crossAxisAlignment: CrossAxisAlignment.end,
-                              children: [
-                                Container(
-                                  padding: const EdgeInsets.symmetric(
-                                    horizontal: 10,
-                                    vertical: 4,
-                                  ),
-                                  decoration: BoxDecoration(
-                                    color: isActive
-                                        ? Colors.green.withOpacity(0.15)
-                                        : Colors.red.withOpacity(0.12),
-                                    borderRadius: BorderRadius.circular(999),
-                                  ),
-                                  child: Text(
-                                    isActive ? 'Active' : 'Inactive',
-                                    style: TextStyle(
-                                      color: isActive
-                                          ? Colors.green.shade800
-                                          : Colors.red.shade800,
-                                      fontSize: 11,
-                                      fontWeight: FontWeight.w600,
-                                    ),
-                                  ),
-                                ),
-                                const SizedBox(height: 4),
-                                PopupMenuButton<String>(
-                                  padding: EdgeInsets.zero,
-                                  onSelected: (value) {
-                                    if (value == 'delete') {
-                                      _deleteStaff(
-                                        doc.id,
-                                        name: name,
-                                        photoUrl: photoUrl.isEmpty
-                                            ? null
-                                            : photoUrl,
-                                      );
-                                    }
-                                  },
-                                  itemBuilder: (ctx) => const [
-                                    PopupMenuItem(
-                                      value: 'delete',
-                                      child: Text(
-                                        'Delete Staff',
-                                        style: TextStyle(color: Colors.red),
-                                      ),
-                                    ),
-                                  ],
-                                  child: const Icon(
-                                    Icons.more_vert,
-                                    size: 20,
-                                  ),
-                                ),
-                              ],
-                            ),
-                          ],
-                        ),
-                      ),
-                    );
-                  },
-                );
-              },
-            ),
+            child: _loading
+                ? const Center(child: CircularProgressIndicator())
+                : _buildStaffList(),
           ),
         ],
       ),
       floatingActionButton: FloatingActionButton.extended(
-        onPressed: () {
-          Navigator.push(
+        onPressed: () async {
+          await Navigator.push(
             context,
             MaterialPageRoute(
               builder: (_) => const HrStaffFormPage(),
             ),
           );
+          _loadStaff(); // refresh after return
         },
         icon: const Icon(Icons.person_add),
         label: const Text('Add Staff'),
+      ),
+    );
+  }
+
+  Widget _buildStaffList() {
+    final q = _searchCtrl.text.trim().toLowerCase();
+    final siteName = CompanyService.instance.siteName;
+
+    final filtered = _allStaff.where((data) {
+      final name = (data['full_name'] ?? 'Unnamed').toString();
+      final email = (data['email'] ?? '-').toString();
+      final position = (data['position'] ?? '').toString();
+
+      final rawRole = (data['app_role'] ?? '').toString().toLowerCase();
+      final department = (data['department'] ?? '').toString().toLowerCase();
+      final isHrFlag = rawRole == 'hr' ||
+          rawRole == 'admin' ||
+          rawRole == 'manager' ||
+          department.contains('human resource') ||
+          position.toLowerCase().contains('hr');
+
+      final roleType = isHrFlag ? 'hr' : 'staff';
+
+      final isActive = data['is_active'] == true;
+      final status = isActive ? 'active' : 'inactive';
+
+      // Search filter
+      final nameL = name.toLowerCase();
+      final emailL = email.toLowerCase();
+      if (q.isNotEmpty &&
+          !nameL.contains(q) &&
+          !emailL.contains(q)) {
+        return false;
+      }
+
+      // Role filter
+      if (_roleFilter != 'all' && roleType != _roleFilter) {
+        return false;
+      }
+
+      // Status filter
+      if (_statusFilter != 'all' && status != _statusFilter) {
+        return false;
+      }
+
+      return true;
+    }).toList();
+
+    if (filtered.isEmpty) {
+      return const Center(child: Text('No staff found.'));
+    }
+
+    return RefreshIndicator(
+      onRefresh: _loadStaff,
+      child: ListView.separated(
+        padding: const EdgeInsets.fromLTRB(16, 4, 16, 16),
+        itemCount: filtered.length,
+        separatorBuilder: (_, __) => const SizedBox(height: 6),
+        itemBuilder: (context, index) {
+          final data = filtered[index];
+          final staffId = data['id'].toString();
+
+          final name = (data['full_name'] ?? 'Unnamed').toString();
+          final email = (data['email'] ?? '-').toString();
+          final siteName = CompanyService.instance.siteName;
+          final staffNumber = (data['staff_number'] ?? '').toString();
+          final position = (data['position'] ?? '').toString();
+
+          final rawRole = (data['app_role'] ?? '').toString().toLowerCase();
+          final department = (data['department'] ?? '').toString().toLowerCase();
+          final isHrFlag = rawRole == 'hr' ||
+              rawRole == 'admin' ||
+              rawRole == 'manager' ||
+              department.contains('human resource') ||
+              position.toLowerCase().contains('hr');
+
+          final roleLabel = isHrFlag ? 'HR' : 'STAFF';
+
+          final isActive = data['is_active'] == true;
+          final photoUrl = _getPhotoUrl(data);
+
+          return InkWell(
+            onTap: () async {
+              await Navigator.push(
+                context,
+                MaterialPageRoute(
+                  builder: (_) => HrStaffFormPage(
+                    staffDocId: staffId,
+                    initialData: data,
+                  ),
+                ),
+              );
+              _loadStaff(); // refresh after return
+            },
+            borderRadius: BorderRadius.circular(18),
+            child: Container(
+              margin: const EdgeInsets.symmetric(vertical: 6),
+              padding: const EdgeInsets.all(14),
+              decoration: BoxDecoration(
+                color: Colors.white,
+                borderRadius: BorderRadius.circular(18),
+                boxShadow: [
+                  BoxShadow(
+                    color: Colors.black.withOpacity(0.06),
+                    blurRadius: 10,
+                    offset: const Offset(0, 4),
+                  ),
+                ],
+              ),
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.center,
+                children: [
+                  // Avatar
+                  CircleAvatar(
+                    radius: 26,
+                    backgroundColor: Colors.blueGrey.shade100,
+                    backgroundImage: photoUrl.isNotEmpty
+                        ? NetworkImage(photoUrl)
+                        : null,
+                    child: photoUrl.isEmpty
+                        ? Text(
+                      name.isNotEmpty
+                          ? name[0].toUpperCase()
+                          : '?',
+                      style: const TextStyle(
+                        fontWeight: FontWeight.bold,
+                        fontSize: 18,
+                      ),
+                    )
+                        : null,
+                  ),
+                  const SizedBox(width: 14),
+
+                  // Main text
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Text(
+                          name,
+                          style: const TextStyle(
+                            fontWeight: FontWeight.w600,
+                            fontSize: 16,
+                          ),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                        const SizedBox(height: 4),
+                        Text(
+                          email,
+                          style: const TextStyle(
+                            fontSize: 13,
+                            color: Colors.black87,
+                          ),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                        const SizedBox(height: 3),
+                        if (siteName.isNotEmpty)
+                          Text(
+                            siteName,
+                            style: const TextStyle(
+                              fontSize: 12,
+                              color: Colors.black54,
+                            ),
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        const SizedBox(height: 3),
+                        Text(
+                          [
+                            if (staffNumber.isNotEmpty) '#$staffNumber',
+                            if (position.isNotEmpty) position,
+                            roleLabel,
+                          ].join(' • '),
+                          style: const TextStyle(
+                            fontSize: 12,
+                            color: Colors.black54,
+                          ),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(width: 10),
+
+                  // Status + menu
+                  Column(
+                    mainAxisSize: MainAxisSize.min,
+                    crossAxisAlignment: CrossAxisAlignment.end,
+                    children: [
+                      Container(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 10,
+                          vertical: 4,
+                        ),
+                        decoration: BoxDecoration(
+                          color: isActive
+                              ? Colors.green.withOpacity(0.15)
+                              : Colors.red.withOpacity(0.12),
+                          borderRadius: BorderRadius.circular(999),
+                        ),
+                        child: Text(
+                          isActive ? 'Active' : 'Inactive',
+                          style: TextStyle(
+                            color: isActive
+                                ? Colors.green.shade800
+                                : Colors.red.shade800,
+                            fontSize: 11,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                      ),
+                      const SizedBox(height: 4),
+                      PopupMenuButton<String>(
+                        padding: EdgeInsets.zero,
+                        onSelected: (value) {
+                          if (value == 'delete') {
+                            _deleteStaff(
+                              staffId,
+                              name: name,
+                              photoUrl: photoUrl.isEmpty
+                                  ? null
+                                  : photoUrl,
+                            );
+                          }
+                        },
+                        itemBuilder: (ctx) => const [
+                          PopupMenuItem(
+                            value: 'delete',
+                            child: Text(
+                              'Delete Staff',
+                              style: TextStyle(color: Colors.red),
+                            ),
+                          ),
+                        ],
+                        child: const Icon(
+                          Icons.more_vert,
+                          size: 20,
+                        ),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+            ),
+          );
+        },
       ),
     );
   }

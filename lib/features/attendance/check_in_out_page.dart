@@ -2,17 +2,16 @@
 import 'dart:async';
 import 'dart:io';
 
-import 'package:cloud_firestore/cloud_firestore.dart';
-import 'package:firebase_auth/firebase_auth.dart';
-import 'package:firebase_storage/firebase_storage.dart';
 import 'package:flutter/material.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 
 import '../../core/constants.dart';
 import '../../models/attendance_models.dart';
 import '../../services/attendance_service.dart';
+import '../../services/supabase_service.dart';
 import '../../services/face_verification_service.dart';
 
 /// Set true to skip geofence + face checks (dev mode)
@@ -30,6 +29,7 @@ class CheckInOutPage extends StatefulWidget {
 
 class _CheckInOutPageState extends State<CheckInOutPage> {
   final _svc = AttendanceService.instance;
+  final _supabase = SupabaseService.instance;
 
   // --- Clock ---
   DateTime _now = DateTime.now();
@@ -50,7 +50,7 @@ class _CheckInOutPageState extends State<CheckInOutPage> {
   bool _busy = false;
   String? _hint;
 
-  // --- Today's punches (raw maps for Firestore compat) ---
+  // --- Today's punches (raw maps) ---
   List<Map<String, dynamic>> _punches = [];
 
   // --- Derived from _punches ---
@@ -118,9 +118,9 @@ class _CheckInOutPageState extends State<CheckInOutPage> {
   }
 
   Future<void> _loadToday() async {
-    final user = FirebaseAuth.instance.currentUser;
-    if (user == null) return;
-    final maps = await _svc.loadTodayPunchMaps(user.uid);
+    final staffId = _supabase.staffId;
+    if (staffId == null) return;
+    final maps = await _svc.loadTodayPunchMaps(staffId);
     if (mounted) setState(() => _punches = maps);
   }
 
@@ -222,8 +222,8 @@ class _CheckInOutPageState extends State<CheckInOutPage> {
       return;
     }
 
-    final user = FirebaseAuth.instance.currentUser;
-    if (user == null) {
+    final staffId = _supabase.staffId;
+    if (staffId == null) {
       setState(() => _hint = 'Session expired. Please log in again.');
       return;
     }
@@ -270,20 +270,27 @@ class _CheckInOutPageState extends State<CheckInOutPage> {
       final newEmbedding = result.embedding!;
 
       setState(() => _hint = 'Uploading selfie...');
-      final url = await _uploadSelfie(file, user.uid);
+      final url = await _uploadSelfie(file, staffId);
 
-      final usersRef =
-          FirebaseFirestore.instance.collection('users').doc(user.uid);
-      final snap = await usersRef.get();
-      final data = snap.data() ?? {};
-      final savedEmbeddingRaw = data['faceEmbedding'] as List?;
+      // Read saved face embedding from staff data
+      final staffData = _supabase.staffData;
+      final savedEmbeddingRaw = staffData?['face_embedding'] as List?;
 
       if (savedEmbeddingRaw == null || savedEmbeddingRaw.isEmpty) {
-        // First-time enrollment
-        await usersRef.set({
-          'faceEmbedding': newEmbedding,
-          'faceImageUrl': url,
-        }, SetOptions(merge: true));
+        // First-time enrollment — save embedding to staff record
+        await _supabase.client
+            .from('staff')
+            .update({
+              'face_embedding': newEmbedding,
+              'face_image_url': url,
+            })
+            .eq('id', staffId);
+
+        // Update cached staff data
+        if (staffData != null) {
+          staffData['face_embedding'] = newEmbedding;
+          staffData['face_image_url'] = url;
+        }
 
         setState(() {
           _busy = false;
@@ -310,10 +317,19 @@ class _CheckInOutPageState extends State<CheckInOutPage> {
           return;
         }
 
-        await usersRef.set({
-          'faceEmbedding': newEmbedding,
-          'faceImageUrl': url,
-        }, SetOptions(merge: true));
+        // Update embedding with latest verified face
+        await _supabase.client
+            .from('staff')
+            .update({
+              'face_embedding': newEmbedding,
+              'face_image_url': url,
+            })
+            .eq('id', staffId);
+
+        if (staffData != null) {
+          staffData['face_embedding'] = newEmbedding;
+          staffData['face_image_url'] = url;
+        }
 
         setState(() {
           _busy = false;
@@ -331,12 +347,17 @@ class _CheckInOutPageState extends State<CheckInOutPage> {
     }
   }
 
-  Future<String> _uploadSelfie(File file, String uid) async {
+  Future<String> _uploadSelfie(File file, String staffId) async {
     final name = '${DateTime.now().millisecondsSinceEpoch}.jpg';
-    final ref = FirebaseStorage.instance
-        .ref('${SmartBayu.tempSelfiePath}/$uid/$name');
-    await ref.putFile(file, SettableMetadata(contentType: 'image/jpeg'));
-    return await ref.getDownloadURL();
+    final path = '${SmartBayu.tempSelfiePath}/$staffId/$name';
+    final bytes = await file.readAsBytes();
+    await Supabase.instance.client.storage
+        .from('smartbayu')
+        .uploadBinary(path, bytes,
+            fileOptions: const FileOptions(contentType: 'image/jpeg'));
+    return Supabase.instance.client.storage
+        .from('smartbayu')
+        .getPublicUrl(path);
   }
 
   // ========================= STEP 3: PUNCH =========================
@@ -360,8 +381,8 @@ class _CheckInOutPageState extends State<CheckInOutPage> {
       return;
     }
 
-    final user = FirebaseAuth.instance.currentUser;
-    if (user == null) {
+    final staffId = _supabase.staffId;
+    if (staffId == null) {
       messenger.showSnackBar(
           const SnackBar(content: Text('Session expired. Please login again.')));
       return;
@@ -371,7 +392,7 @@ class _CheckInOutPageState extends State<CheckInOutPage> {
 
     try {
       final updated = await _svc.recordPunch(
-        uid: user.uid,
+        staffId: staffId,
         type: type,
         lat: _pos?.latitude ?? 0,
         lng: _pos?.longitude ?? 0,
@@ -610,20 +631,23 @@ class _CheckInOutPageState extends State<CheckInOutPage> {
           final type = PunchType.fromKey(p['type'] as String?);
           final ts = p['time'];
           DateTime? time;
-          if (ts is Timestamp) time = ts.toDate();
+          if (ts is String) time = DateTime.tryParse(ts);
+          if (ts is DateTime) time = ts;
           final geoOk = p['geoOk'] as bool? ?? false;
           final color = _punchColor(type);
 
           final timeStr = time != null
-              ? '${time.hour.toString().padLeft(2, '0')}:${time.minute.toString().padLeft(2, '0')}'
+              ? '${time.toLocal().hour.toString().padLeft(2, '0')}:${time.toLocal().minute.toString().padLeft(2, '0')}'
               : '--:--';
 
           // Duration to next punch
           String? durationStr;
           if (i < _punches.length - 1 && time != null) {
             final nextTs = _punches[i + 1]['time'];
-            if (nextTs is Timestamp) {
-              final nextTime = nextTs.toDate();
+            DateTime? nextTime;
+            if (nextTs is String) nextTime = DateTime.tryParse(nextTs);
+            if (nextTs is DateTime) nextTime = nextTs;
+            if (nextTime != null) {
               final mins = nextTime.difference(time).inMinutes;
               if (type == PunchType.checkin) {
                 durationStr = 'Worked ${_fmtMins(mins)}';

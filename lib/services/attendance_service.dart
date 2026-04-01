@@ -1,17 +1,18 @@
 // lib/services/attendance_service.dart
 //
 // Central service for all attendance / punch operations.
-// Single source of truth for Firestore reads & writes.
+// Single source of truth for Supabase reads & writes.
 
-import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 
 import '../models/attendance_models.dart';
+import 'supabase_service.dart';
 
 class AttendanceService {
   AttendanceService._();
   static final instance = AttendanceService._();
 
-  final _db = FirebaseFirestore.instance;
+  SupabaseClient get _db => SupabaseService.instance.client;
 
   // ─── Helpers ───
 
@@ -20,57 +21,54 @@ class AttendanceService {
       '${d.month.toString().padLeft(2, '0')}-'
       '${d.day.toString().padLeft(2, '0')}';
 
-  DocumentReference<Map<String, dynamic>> _attendanceDoc(
-      String uid, DateTime date) {
-    return _db
-        .collection('users')
-        .doc(uid)
-        .collection('attendance')
-        .doc(docIdForDate(date));
-  }
-
   // ─── Load today's record ───
 
-  Future<DayRecord?> loadDay(String uid, DateTime date) async {
-    final snap = await _attendanceDoc(uid, date).get();
-    if (!snap.exists || snap.data() == null) return null;
-    return DayRecord.fromFirestore(snap.data()!);
+  Future<DayRecord?> loadDay(String staffId, DateTime date) async {
+    final dateStr = docIdForDate(date);
+    final row = await _db
+        .from('attendance')
+        .select()
+        .eq('staff_id', staffId)
+        .eq('attendance_date', dateStr)
+        .maybeSingle();
+
+    if (row == null) return null;
+    return DayRecord.fromSupabase(row);
   }
 
   // ─── Load today's punches (raw maps for check-in page) ───
 
-  Future<List<Map<String, dynamic>>> loadTodayPunchMaps(String uid) async {
+  Future<List<Map<String, dynamic>>> loadTodayPunchMaps(String staffId) async {
     final now = DateTime.now();
-    final snap = await _attendanceDoc(uid, now).get();
-    final data = snap.data();
-    if (data == null) return [];
+    final dateStr = docIdForDate(now);
+    final row = await _db
+        .from('attendance')
+        .select('punches, check_in_time, check_out_time')
+        .eq('staff_id', staffId)
+        .eq('attendance_date', dateStr)
+        .maybeSingle();
 
-    if (data['punches'] != null) {
-      return List<Map<String, dynamic>>.from(data['punches'] as List);
+    if (row == null) return [];
+
+    final punches = row['punches'];
+    if (punches != null && punches is List && punches.isNotEmpty) {
+      return List<Map<String, dynamic>>.from(punches);
     }
 
-    // Migrate old format
+    // Fallback: derive from flat columns
     final List<Map<String, dynamic>> migrated = [];
-    final inAt = data['inAt'] as Timestamp?;
-    final outAt = data['outAt'] as Timestamp?;
+    final inAt = row['check_in_time'] as String?;
     if (inAt != null) {
       migrated.add({
         'type': PunchType.checkin.key,
         'time': inAt,
-        'lat': data['inLat'],
-        'lng': data['inLng'],
-        'geoOk': data['geoOk'],
-        'confidence': data['verifyConfidence'],
       });
     }
+    final outAt = row['check_out_time'] as String?;
     if (outAt != null) {
       migrated.add({
         'type': PunchType.checkout.key,
         'time': outAt,
-        'lat': data['outLat'],
-        'lng': data['outLng'],
-        'geoOk': data['geoOk'],
-        'confidence': data['verifyConfidence'],
       });
     }
     return migrated;
@@ -79,22 +77,22 @@ class AttendanceService {
   // ─── Record a punch ───
 
   Future<List<Map<String, dynamic>>> recordPunch({
-    required String uid,
+    required String staffId,
     required PunchType type,
     required double lat,
     required double lng,
     required bool geoOk,
     required double? confidence,
     required List<Map<String, dynamic>> existingPunches,
+    String? deviceId,
   }) async {
     final now = DateTime.now();
-    final docRef = _attendanceDoc(uid, now);
-    final userDoc = _db.collection('users').doc(uid);
-    final workDateMidnight = DateTime(now.year, now.month, now.day);
+    final dateStr = docIdForDate(now);
+    final companyId = SupabaseService.instance.companyId;
 
     final punchMap = {
       'type': type.key,
-      'time': Timestamp.fromDate(now),
+      'time': now.toUtc().toIso8601String(),
       'lat': lat,
       'lng': lng,
       'geoOk': geoOk,
@@ -104,93 +102,85 @@ class AttendanceService {
     final punches = List<Map<String, dynamic>>.from(existingPunches);
     punches.add(punchMap);
 
-    // Derive first-in and last-out for backward compat
-    Timestamp? firstIn;
-    Timestamp? lastOut;
+    // Derive first-in and last-out
+    String? firstIn;
+    String? lastOut;
     for (final p in punches) {
-      final t = p['time'] as Timestamp;
+      final t = p['time'] as String?;
       final pType = PunchType.fromKey(p['type'] as String?);
-      if (pType == PunchType.checkin) {
-        firstIn ??= t;
-      }
-      if (pType == PunchType.checkout) {
-        lastOut = t;
-      }
+      if (pType == PunchType.checkin) firstIn ??= t;
+      if (pType == PunchType.checkout) lastOut = t;
     }
 
-    // Derive status from last punch
+    // Derive status
     final lastPunchType = PunchType.fromKey(punches.last['type'] as String?);
     String status;
     switch (lastPunchType) {
       case PunchType.breakStart:
-        status = 'On Break';
+        status = 'present'; // on break but present
         break;
       case PunchType.checkout:
-        status = 'Present';
+        status = 'present';
         break;
       case PunchType.checkin:
-        status = 'Checked-in only';
+        status = 'present';
         break;
     }
 
-    await docRef.set({
-      'uid': uid,
-      'workDate': Timestamp.fromDate(workDateMidnight),
-      'status': status,
-      'updatedAt': FieldValue.serverTimestamp(),
-      'punches': punches,
-      if (firstIn != null) 'inAt': firstIn,
-      if (lastOut != null) 'outAt': lastOut,
-      'geoOk': geoOk,
-      'verifyConfidence': confidence,
-    }, SetOptions(merge: true));
+    // Calculate hours worked
+    double hoursWorked = 0;
+    final workMins = workMinutesFromMaps(punches);
+    hoursWorked = workMins / 60.0;
 
-    // Update user-level lastIn / lastOut
-    if (type == PunchType.checkin) {
-      await userDoc
-          .set({'lastIn': FieldValue.serverTimestamp()}, SetOptions(merge: true));
-    } else if (type == PunchType.checkout) {
-      await userDoc.set(
-          {'lastOut': FieldValue.serverTimestamp()}, SetOptions(merge: true));
-    }
-    // break_start doesn't update lastIn/lastOut
+    // Upsert attendance record
+    await _db.from('attendance').upsert({
+      'staff_id': staffId,
+      'company_id': companyId,
+      'attendance_date': dateStr,
+      'status': status,
+      'punches': punches,
+      'check_in_time': firstIn,
+      'check_out_time': lastOut,
+      'clock_in_lat': type == PunchType.checkin ? lat : null,
+      'clock_in_lng': type == PunchType.checkin ? lng : null,
+      'clock_out_lat': type == PunchType.checkout ? lat : null,
+      'clock_out_lng': type == PunchType.checkout ? lng : null,
+      'face_verified': confidence != null && confidence > 0,
+      'device_id': deviceId,
+      'hours_worked': hoursWorked,
+      'source': 'mobile',
+    }, onConflict: 'staff_id,attendance_date');
 
     return punches;
   }
 
   // ─── Stream for attendance history ───
 
-  Stream<QuerySnapshot<Map<String, dynamic>>> attendanceStream(
-    String uid, {
-    int limit = 120,
-  }) {
+  Stream<List<Map<String, dynamic>>> attendanceStream(String staffId) {
     return _db
-        .collection('users')
-        .doc(uid)
-        .collection('attendance')
-        .orderBy('workDate', descending: true)
-        .limit(limit)
-        .snapshots();
+        .from('attendance')
+        .stream(primaryKey: ['id'])
+        .eq('staff_id', staffId)
+        .order('attendance_date', ascending: false);
   }
 
   // ─── One-shot fetch for HR reports ───
 
   Future<List<DayRecord>> fetchAttendance(
-    String uid, {
+    String staffId, {
     int limit = 150,
     int? filterMonth,
     int? filterYear,
   }) async {
-    final snap = await _db
-        .collection('users')
-        .doc(uid)
-        .collection('attendance')
-        .orderBy('workDate', descending: true)
-        .limit(limit)
-        .get();
+    var query = _db
+        .from('attendance')
+        .select()
+        .eq('staff_id', staffId)
+        .order('attendance_date', ascending: false)
+        .limit(limit);
 
-    final records =
-        snap.docs.map((d) => DayRecord.fromFirestore(d.data())).toList();
+    final rows = await query;
+    final records = (rows as List).map((r) => DayRecord.fromSupabase(r)).toList();
 
     if (filterMonth != null) {
       return records.where((r) {
@@ -201,6 +191,26 @@ class AttendanceService {
     }
 
     return records;
+  }
+
+  // ─── Fetch for HR: all staff in company ───
+
+  Future<List<Map<String, dynamic>>> fetchCompanyAttendance({
+    required String companyId,
+    String? staffId,
+    String? dateFrom,
+    String? dateTo,
+  }) async {
+    var query = _db
+        .from('attendance')
+        .select('*, staff!inner(full_name, staff_number, department)')
+        .eq('company_id', companyId);
+
+    if (staffId != null) query = query.eq('staff_id', staffId);
+    if (dateFrom != null) query = query.gte('attendance_date', dateFrom);
+    if (dateTo != null) query = query.lte('attendance_date', dateTo);
+
+    return await query.order('attendance_date', ascending: false);
   }
 
   // ─── Utility: derive WorkState from punch maps ───
@@ -226,13 +236,11 @@ class AttendanceService {
     for (final p in punches) {
       final ts = p['time'];
       if (ts == null) continue;
-      final time = ts is Timestamp ? ts.toDate() : DateTime.now();
+      final time = _parseTime(ts);
       final type = PunchType.fromKey(p['type'] as String?);
       if (type == PunchType.checkin) {
         lastIn = time;
-      } else if ((type == PunchType.breakStart ||
-              type == PunchType.checkout) &&
-          lastIn != null) {
+      } else if ((type == PunchType.breakStart || type == PunchType.checkout) && lastIn != null) {
         total += time.difference(lastIn).inMinutes;
         lastIn = null;
       }
@@ -249,7 +257,7 @@ class AttendanceService {
     for (final p in punches) {
       final ts = p['time'];
       if (ts == null) continue;
-      final time = ts is Timestamp ? ts.toDate() : DateTime.now();
+      final time = _parseTime(ts);
       final type = PunchType.fromKey(p['type'] as String?);
       if (type == PunchType.breakStart) {
         breakStart = time;
@@ -262,5 +270,12 @@ class AttendanceService {
       total += DateTime.now().difference(breakStart).inMinutes;
     }
     return total;
+  }
+
+  /// Parse time from either ISO string or DateTime
+  DateTime _parseTime(dynamic ts) {
+    if (ts is DateTime) return ts;
+    if (ts is String) return DateTime.parse(ts);
+    return DateTime.now();
   }
 }

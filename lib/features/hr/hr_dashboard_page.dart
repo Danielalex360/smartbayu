@@ -1,14 +1,16 @@
 // lib/features/hr/hr_dashboard_page.dart
 
-import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 
+import '../../services/supabase_service.dart';
 import '../hr/hr_leave_list_page.dart';
 import '../hr/hr_claim_requests_page.dart';
 import '../payslip/hr_create_payslip_page.dart';
 import 'hr_staff_management_page.dart';
 import '../hr/hr_reports_page.dart';
 import 'hr_company_settings_page.dart';
+
 class HrDashboardPage extends StatelessWidget {
   const HrDashboardPage({super.key});
 
@@ -191,14 +193,14 @@ class _HrStatsRow extends StatelessWidget {
             label: 'Total Staff',
             icon: Icons.groups_rounded,
             color: Color(0xFF4C6FFF),
-            streamType: _StatType.allStaff,
+            statType: _StatType.allStaff,
           ),
           SizedBox(width: 8),
           _StatChip(
             label: 'Active Staff',
             icon: Icons.verified_user_rounded,
             color: Color(0xFF16A34A),
-            streamType: _StatType.activeStaff,
+            statType: _StatType.activeStaff,
           ),
         ],
       ),
@@ -208,62 +210,57 @@ class _HrStatsRow extends StatelessWidget {
 
 enum _StatType { allStaff, activeStaff }
 
-class _StatChip extends StatelessWidget {
+class _StatChip extends StatefulWidget {
   const _StatChip({
     required this.label,
     required this.icon,
     required this.color,
-    required this.streamType,
+    required this.statType,
   });
 
   final String label;
   final IconData icon;
   final Color color;
-  final _StatType streamType;
+  final _StatType statType;
 
-  Stream<QuerySnapshot<Map<String, dynamic>>> _buildStream() {
-    switch (streamType) {
-      case _StatType.allStaff:
-        return FirebaseFirestore.instance.collection('users').snapshots();
-      case _StatType.activeStaff:
-        return FirebaseFirestore.instance
-            .collection('users')
-            .where('active', isEqualTo: true)
-            .snapshots();
+  @override
+  State<_StatChip> createState() => _StatChipState();
+}
+
+class _StatChipState extends State<_StatChip> {
+  int _count = 0;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadCount();
+  }
+
+  Future<void> _loadCount() async {
+    try {
+      final companyId = SupabaseService.instance.companyId;
+      if (companyId == null) return;
+
+      var query = Supabase.instance.client
+          .from('staff')
+          .select('id')
+          .eq('company_id', companyId);
+
+      if (widget.statType == _StatType.activeStaff) {
+        query = query.eq('is_active', true);
+      }
+
+      final result = await query;
+      if (mounted) {
+        setState(() => _count = (result as List).length);
+      }
+    } catch (e) {
+      debugPrint('HR stats error (${widget.label}): $e');
     }
   }
 
   @override
   Widget build(BuildContext context) {
-    return StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
-      stream: _buildStream(),
-      builder: (context, snapshot) {
-        int count = 0;
-
-        if (snapshot.hasData) {
-          count = snapshot.data!.docs.length;
-        }
-
-        if (snapshot.hasError) {
-          debugPrint('🔥 HR stats error ($label): ${snapshot.error}');
-        }
-
-        return _buildChip(
-          icon: icon,
-          color: color,
-          bigText: '$count',
-          smallText: label,
-        );
-      },
-    );
-  }
-
-  Widget _buildChip({
-    required IconData icon,
-    required Color color,
-    required String bigText,
-    required String smallText,
-  }) {
     return Container(
       width: 150,
       padding: const EdgeInsets.all(12),
@@ -284,13 +281,13 @@ class _StatChip extends StatelessWidget {
           Container(
             padding: const EdgeInsets.all(8),
             decoration: BoxDecoration(
-              color: color.withOpacity(0.08),
+              color: widget.color.withOpacity(0.08),
               borderRadius: BorderRadius.circular(12),
             ),
             child: Icon(
-              icon,
+              widget.icon,
               size: 20,
-              color: color,
+              color: widget.color,
             ),
           ),
           const SizedBox(width: 10),
@@ -299,7 +296,7 @@ class _StatChip extends StatelessWidget {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(
-                  bigText,
+                  '$_count',
                   style: const TextStyle(
                     fontSize: 18,
                     fontWeight: FontWeight.w800,
@@ -307,7 +304,7 @@ class _StatChip extends StatelessWidget {
                   ),
                 ),
                 Text(
-                  smallText,
+                  widget.label,
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
                   style: const TextStyle(

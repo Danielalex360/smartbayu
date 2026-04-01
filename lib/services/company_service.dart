@@ -1,5 +1,8 @@
 import 'dart:async';
-import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:flutter/material.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
+
+import 'supabase_service.dart';
 
 class CompanyConfig {
   final String companyName;
@@ -31,33 +34,29 @@ class CompanyConfig {
   });
 
   factory CompanyConfig.fromMap(Map<String, dynamic> data) {
+    // Support both flat columns and nested settings JSONB
+    final settings = (data['settings'] as Map<String, dynamic>?) ?? {};
     return CompanyConfig(
-      companyName: (data['companyName'] as String?) ?? 'Bayu Lestari Resort',
-      siteName: (data['siteName'] as String?) ?? 'Pulau Besar Site',
-      logoUrl: data['logoUrl'] as String?,
-      address: data['address'] as String?,
-      phone: data['phone'] as String?,
-      email: data['email'] as String?,
-      website: data['website'] as String?,
-      registrationNo: data['registrationNo'] as String?,
-      geofenceLat: (data['geofenceLat'] as num?)?.toDouble() ?? 2.428795,
-      geofenceLng: (data['geofenceLng'] as num?)?.toDouble() ?? 103.983596,
-      geofenceMeters: (data['geofenceMeters'] as num?)?.toInt() ?? 3000,
+      companyName: (data['name'] as String?) ?? (settings['companyName'] as String?) ?? 'Bayu Lestari Resort',
+      siteName: (settings['siteName'] as String?) ?? (data['name'] as String?) ?? 'Pulau Besar Site',
+      logoUrl: (settings['logoUrl'] as String?) ?? (data['logo_url'] as String?),
+      address: (data['address'] as String?) ?? (settings['address'] as String?),
+      phone: (data['phone'] as String?) ?? (settings['phone'] as String?),
+      email: (data['email'] as String?) ?? (settings['email'] as String?),
+      website: (data['website'] as String?) ?? (settings['website'] as String?),
+      registrationNo: (data['registration_no'] as String?) ?? (settings['registrationNo'] as String?),
+      geofenceLat: (settings['geofenceLat'] as num?)?.toDouble() ?? 2.428795,
+      geofenceLng: (settings['geofenceLng'] as num?)?.toDouble() ?? 103.983596,
+      geofenceMeters: (settings['geofenceMeters'] as num?)?.toInt() ?? 3000,
       raw: data,
     );
   }
 
   factory CompanyConfig.defaults() => CompanyConfig.fromMap({});
 
-  Map<String, dynamic> toMap() => {
-    'companyName': companyName,
+  Map<String, dynamic> toSettingsMap() => {
     'siteName': siteName,
     'logoUrl': logoUrl,
-    'address': address,
-    'phone': phone,
-    'email': email,
-    'website': website,
-    'registrationNo': registrationNo,
     'geofenceLat': geofenceLat,
     'geofenceLng': geofenceLng,
     'geofenceMeters': geofenceMeters,
@@ -68,36 +67,59 @@ class CompanyService {
   CompanyService._();
   static final instance = CompanyService._();
 
-  static const _docPath = 'app_config/company';
-
   CompanyConfig _config = CompanyConfig.defaults();
   CompanyConfig get config => _config;
+  String get siteName => _config.siteName;
 
-  StreamSubscription? _sub;
   final _controller = StreamController<CompanyConfig>.broadcast();
   Stream<CompanyConfig> get stream => _controller.stream;
 
-  DocumentReference get _docRef =>
-      FirebaseFirestore.instance.doc(_docPath);
-
-  /// Start listening to company config changes. Call once at app start.
+  /// Start listening — loads company config from Supabase.
+  /// Call once at app start. Reloads when company_id is available.
   void startListening() {
-    _sub?.cancel();
-    _sub = _docRef.snapshots().listen((snap) {
-      final data = (snap.data() as Map<String, dynamic>?) ?? {};
-      _config = CompanyConfig.fromMap(data);
-      _controller.add(_config);
-    });
+    _loadConfig();
+  }
+
+  Future<void> _loadConfig() async {
+    try {
+      final companyId = SupabaseService.instance.companyId;
+      if (companyId == null) return;
+
+      final row = await Supabase.instance.client
+          .from('companies')
+          .select()
+          .eq('id', companyId)
+          .maybeSingle();
+
+      if (row != null) {
+        _config = CompanyConfig.fromMap(row);
+        _controller.add(_config);
+      }
+    } catch (e) {
+      debugPrint('CompanyService error: $e');
+    }
+  }
+
+  /// Reload config (e.g. after login when companyId becomes available)
+  Future<void> reload() async => _loadConfig();
+
+  /// Save company settings to Supabase
+  Future<void> save(CompanyConfig config) async {
+    final companyId = SupabaseService.instance.companyId;
+    if (companyId == null) return;
+
+    await Supabase.instance.client
+        .from('companies')
+        .update({
+          'settings': config.toSettingsMap(),
+        })
+        .eq('id', companyId);
+
+    _config = config;
+    _controller.add(_config);
   }
 
   void dispose() {
-    _sub?.cancel();
     _controller.close();
   }
-
-  /// Save company config to Firestore.
-  Future<void> save(CompanyConfig config) async {
-    await _docRef.set(config.toMap(), SetOptions(merge: true));
-  }
-
 }

@@ -73,7 +73,7 @@ class HrReportsPage extends StatelessWidget {
             ),
             const SizedBox(height: 12),
 
-            // Claims Summary - still coming soon (nanti kita buat)
+            // Claims Summary
             _ReportCard(
               icon: Icons.receipt_long_rounded,
               iconBg: const Color(0xFFE0F2FE),

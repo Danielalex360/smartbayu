@@ -1,8 +1,6 @@
 // lib/features/attendance/attendance_history_page.dart
 import 'dart:typed_data';
 
-import 'package:cloud_firestore/cloud_firestore.dart';
-import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart' show rootBundle;
 import 'package:pdf/pdf.dart';
@@ -11,6 +9,7 @@ import 'package:printing/printing.dart';
 
 import '../../models/attendance_models.dart';
 import '../../services/attendance_service.dart';
+import '../../services/supabase_service.dart';
 
 class AttendanceHistoryPage extends StatefulWidget {
   const AttendanceHistoryPage({super.key});
@@ -24,9 +23,9 @@ class _AttendanceHistoryPageState extends State<AttendanceHistoryPage> {
 
   @override
   Widget build(BuildContext context) {
-    final user = FirebaseAuth.instance.currentUser;
+    final staffId = SupabaseService.instance.staffId;
 
-    if (user == null) {
+    if (staffId == null) {
       return Scaffold(
         appBar: AppBar(title: const Text('My Attendance')),
         body: const Center(child: Text('You are not logged in.')),
@@ -44,8 +43,8 @@ class _AttendanceHistoryPageState extends State<AttendanceHistoryPage> {
             style: TextStyle(fontWeight: FontWeight.w700, fontSize: 18)),
         centerTitle: true,
       ),
-      body: StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
-        stream: AttendanceService.instance.attendanceStream(user.uid),
+      body: StreamBuilder<List<Map<String, dynamic>>>(
+        stream: AttendanceService.instance.attendanceStream(staffId),
         builder: (context, snap) {
           if (snap.connectionState == ConnectionState.waiting) {
             return const Center(child: CircularProgressIndicator());
@@ -53,26 +52,26 @@ class _AttendanceHistoryPageState extends State<AttendanceHistoryPage> {
           if (snap.hasError) {
             return Center(child: Text('Error: ${snap.error}'));
           }
-          if (!snap.hasData || snap.data!.docs.isEmpty) {
+          if (!snap.hasData || snap.data!.isEmpty) {
             return const Center(child: Text('No attendance record yet.'));
           }
 
-          final allDocs = snap.data!.docs;
+          final allRows = snap.data!;
           final now = DateTime.now();
-          final filteredDocs = allDocs.where((doc) {
+          final filteredRows = allRows.where((row) {
             if (_filter == 'All') return true;
-            final data = doc.data();
-            final ts = (data['workDate'] as Timestamp?) ??
-                (data['inAt'] as Timestamp?) ??
-                (data['outAt'] as Timestamp?);
-            if (ts == null) return false;
-            final d = ts.toDate();
+            final dateStr = row['attendance_date'] as String? ??
+                row['check_in_time'] as String? ??
+                row['check_out_time'] as String?;
+            if (dateStr == null) return false;
+            final d = DateTime.tryParse(dateStr);
+            if (d == null) return false;
             return d.year == now.year && d.month == now.month;
           }).toList();
 
           // Build DayRecords
-          final records = filteredDocs
-              .map((d) => DayRecord.fromFirestore(d.data()))
+          final records = filteredRows
+              .map((d) => DayRecord.fromSupabase(d))
               .toList();
 
           int presentCount = 0;
@@ -162,9 +161,9 @@ class _AttendanceHistoryPageState extends State<AttendanceHistoryPage> {
   }
 
   void _openPdf(BuildContext context, List<DayRecord> records) {
-    final user = FirebaseAuth.instance.currentUser;
-    final staffName = user?.displayName?.trim() ?? 'SmartBayu User';
-    final staffEmail = user?.email;
+    final svc = SupabaseService.instance;
+    final staffName = svc.fullName.isNotEmpty ? svc.fullName : 'SmartBayu User';
+    final staffEmail = svc.email;
     final rangeLabel = _filter == 'All' ? 'All records' : 'This month only';
 
     Navigator.of(context).push(MaterialPageRoute(

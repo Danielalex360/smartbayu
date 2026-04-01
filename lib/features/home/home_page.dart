@@ -2,10 +2,11 @@
 import 'dart:async';
 import 'dart:ui' show ImageFilter;
 
-import 'package:cloud_firestore/cloud_firestore.dart';
-import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 
+import '../../services/supabase_service.dart';
+import '../../services/company_service.dart';
 import '../attendance/check_in_out_page.dart';
 import '../attendance/my_attendance_page.dart';
 import '../claims/apply_claim_page.dart';
@@ -32,7 +33,7 @@ class HomePage extends StatefulWidget {
     this.lastOut,
   });
 
-  // ⚠️ FALLBACKS (first paint while Firestore loads)
+  // Fallbacks (first paint while Supabase loads)
   final bool isHr;
   final String displayName;
   final String siteName;
@@ -54,7 +55,7 @@ class _HomePageState extends State<HomePage> {
 
   String? _lastInStr;
   String? _lastOutStr;
-  StreamSubscription<DocumentSnapshot<Map<String, dynamic>>>? _userSub;
+  StreamSubscription? _staffSub;
 
   @override
   void initState() {
@@ -68,25 +69,30 @@ class _HomePageState extends State<HomePage> {
   }
 
   void _listenUserLastTimes() {
-    final user = FirebaseAuth.instance.currentUser;
-    if (user == null) return;
+    final svc = SupabaseService.instance;
+    final staffId = svc.staffId;
+    if (staffId == null) return;
 
-    _userSub = FirebaseFirestore.instance
-        .collection('users')
-        .doc(user.uid)
-        .snapshots()
-        .listen((snap) {
-      final data = snap.data();
-      if (data == null) return;
-
-      final tsIn = data['lastIn'];
-      final tsOut = data['lastOut'];
+    _staffSub = Supabase.instance.client
+        .from('staff')
+        .stream(primaryKey: ['id'])
+        .eq('id', staffId)
+        .listen((rows) {
+      if (rows.isEmpty) return;
+      final data = rows.first;
 
       String? inStr;
       String? outStr;
 
-      if (tsIn is Timestamp) inStr = _formatLastTime(tsIn.toDate());
-      if (tsOut is Timestamp) outStr = _formatLastTime(tsOut.toDate());
+      final lastIn = data['last_in'];
+      final lastOut = data['last_out'];
+
+      if (lastIn is String && lastIn.isNotEmpty) {
+        inStr = _formatLastTime(DateTime.parse(lastIn));
+      }
+      if (lastOut is String && lastOut.isNotEmpty) {
+        outStr = _formatLastTime(DateTime.parse(lastOut));
+      }
 
       if (mounted) {
         setState(() {
@@ -100,7 +106,7 @@ class _HomePageState extends State<HomePage> {
   @override
   void dispose() {
     _timer.cancel();
-    _userSub?.cancel();
+    _staffSub?.cancel();
     super.dispose();
   }
 
@@ -129,23 +135,23 @@ class _HomePageState extends State<HomePage> {
         '${months[d.month - 1]} ${d.year}';
   }
 
-  _LiveProfile _computeLiveProfile({
-    required User? authUser,
-    required Map<String, dynamic>? data,
-  }) {
+  _LiveProfile _computeLiveProfile() {
+    final svc = SupabaseService.instance;
+    final data = svc.staffData;
+
     final fallbackName = widget.displayName.isNotEmpty
         ? widget.displayName
-        : (authUser?.email ?? 'User');
+        : (svc.email ?? 'User');
 
-    final nameRaw = (data?['name'] as String?)?.trim();
-    final siteRaw = (data?['site'] as String?)?.trim();
-    final photoRaw = (data?['photoUrl'] as String?)?.trim();
+    final nameRaw = (data?['full_name'] as String?)?.trim();
+    final photoRaw = (data?['photo_url'] as String?)?.trim()
+        ?? (data?['profile_photo_url'] as String?)?.trim();
 
-    final roleRaw = (data?['role'] as String?)?.toLowerCase().trim();
-    final roleTitleRaw = (data?['roleTitle'] as String?)?.trim();
+    final roleRaw = (data?['app_role'] as String?)?.toLowerCase().trim();
+    final positionRaw = (data?['position'] as String?)?.trim();
 
     final name = (nameRaw != null && nameRaw.isNotEmpty) ? nameRaw : fallbackName;
-    final site = (siteRaw != null && siteRaw.isNotEmpty) ? siteRaw : widget.siteName;
+    final site = CompanyService.instance.siteName;
     final photoUrl = (photoRaw != null && photoRaw.isNotEmpty) ? photoRaw : widget.photoUrl;
 
     final r = (roleRaw ?? '');
@@ -157,8 +163,8 @@ class _HomePageState extends State<HomePage> {
         r.contains('manager') ||
         r.contains('admin');
 
-    final roleText = (roleTitleRaw != null && roleTitleRaw.isNotEmpty)
-        ? roleTitleRaw
+    final roleText = (positionRaw != null && positionRaw.isNotEmpty)
+        ? positionRaw
         : (isHr ? 'HR / Manager' : 'Staff');
 
     return _LiveProfile(
@@ -171,8 +177,8 @@ class _HomePageState extends State<HomePage> {
   }
 
   void _openFullProfileLive(_LiveProfile p) {
-    final authUser = FirebaseAuth.instance.currentUser;
-    final uid = authUser?.uid;
+    final svc = SupabaseService.instance;
+    final uid = svc.staffId;
 
     Navigator.of(context).push(
       PageRouteBuilder(
@@ -183,7 +189,7 @@ class _HomePageState extends State<HomePage> {
             uid: uid,
             prefill: ProfilePrefill(
               name: p.name,
-              email: authUser?.email,
+              email: svc.email,
               role: p.roleText,
               site: p.site,
               photoUrl: p.photoUrl,
@@ -352,36 +358,18 @@ class _HomePageState extends State<HomePage> {
     final lastInDisplay = _lastInStr ?? widget.lastIn ?? '--:--';
     final lastOutDisplay = _lastOutStr ?? widget.lastOut ?? '--:--';
 
-    final authUser = FirebaseAuth.instance.currentUser;
-    final uid = authUser?.uid;
+    final svc = SupabaseService.instance;
+    final staffId = svc.staffId;
 
-    if (uid == null) {
-      final p = _computeLiveProfile(authUser: authUser, data: null);
-      return _buildScaffold(
-        uid: null,
-        timeStr: timeStr,
-        dateStr: dateStr,
-        lastInDisplay: lastInDisplay,
-        lastOutDisplay: lastOutDisplay,
-        profile: p,
-      );
-    }
+    final p = _computeLiveProfile();
 
-    return StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
-      stream: FirebaseFirestore.instance.collection('users').doc(uid).snapshots(),
-      builder: (context, snap) {
-        final data = snap.data?.data();
-        final p = _computeLiveProfile(authUser: authUser, data: data);
-
-        return _buildScaffold(
-          uid: uid,
-          timeStr: timeStr,
-          dateStr: dateStr,
-          lastInDisplay: lastInDisplay,
-          lastOutDisplay: lastOutDisplay,
-          profile: p,
-        );
-      },
+    return _buildScaffold(
+      uid: staffId,
+      timeStr: timeStr,
+      dateStr: dateStr,
+      lastInDisplay: lastInDisplay,
+      lastOutDisplay: lastOutDisplay,
+      profile: p,
     );
   }
 
@@ -404,68 +392,7 @@ class _HomePageState extends State<HomePage> {
             expandedHeight: 200,
             actions: [
               if (uid != null)
-                StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
-                  stream: FirebaseFirestore.instance
-                      .collection('notifications')
-                      .where('userId', isEqualTo: uid)
-                      .where('isRead', isEqualTo: false)
-                      .snapshots(),
-                  builder: (context, snapshot) {
-                    if (snapshot.connectionState == ConnectionState.waiting ||
-                        snapshot.hasError ||
-                        !snapshot.hasData) {
-                      return IconButton(
-                        tooltip: 'Notifications',
-                        onPressed: () {
-                          Navigator.of(context).push(
-                            MaterialPageRoute(builder: (_) => const NotificationPage()),
-                          );
-                        },
-                        icon: const Icon(Icons.notifications_none_rounded, color: Colors.white),
-                      );
-                    }
-
-                    final unseenCount = snapshot.data!.docs.length;
-
-                    return IconButton(
-                      tooltip: 'Notifications',
-                      onPressed: () {
-                        Navigator.of(context).push(
-                          MaterialPageRoute(builder: (_) => const NotificationPage()),
-                        );
-                      },
-                      icon: Stack(
-                        clipBehavior: Clip.none,
-                        children: [
-                          const Icon(Icons.notifications_none_rounded, color: Colors.white),
-                          if (unseenCount > 0)
-                            Positioned(
-                              right: -2,
-                              top: -2,
-                              child: Container(
-                                padding: const EdgeInsets.all(2),
-                                decoration: BoxDecoration(
-                                  color: Colors.redAccent,
-                                  borderRadius: BorderRadius.circular(999),
-                                ),
-                                constraints: const BoxConstraints(minWidth: 16, minHeight: 16),
-                                child: Center(
-                                  child: Text(
-                                    unseenCount > 9 ? '9+' : unseenCount.toString(),
-                                    style: const TextStyle(
-                                      color: Colors.white,
-                                      fontSize: 10,
-                                      fontWeight: FontWeight.bold,
-                                    ),
-                                  ),
-                                ),
-                              ),
-                            ),
-                        ],
-                      ),
-                    );
-                  },
-                ),
+                _NotificationBellButton(staffId: uid),
               if (widget.onLogout != null)
                 IconButton(
                   tooltip: 'Logout',
@@ -634,7 +561,6 @@ class _HomePageState extends State<HomePage> {
                   },
                 ),
 
-                // ✅ HR: card kelabu biasa, cuma ada badge HR ONLY
                 if (profile.isHr)
                   _HrPanelCard(
                     onTap: () {
@@ -643,12 +569,103 @@ class _HomePageState extends State<HomePage> {
                       );
                     },
                   )
-                // ✅ Staff: takde animasi & takde text geofence — hanya logo SmartBayu
                 else
                   const _SmartBayuLogoCard(),
               ]),
             ),
           ),
+        ],
+      ),
+    );
+  }
+}
+
+// ===================== Notification Bell (Supabase query) =====================
+class _NotificationBellButton extends StatefulWidget {
+  const _NotificationBellButton({required this.staffId});
+  final String staffId;
+
+  @override
+  State<_NotificationBellButton> createState() => _NotificationBellButtonState();
+}
+
+class _NotificationBellButtonState extends State<_NotificationBellButton> {
+  int _unseenCount = 0;
+  StreamSubscription? _sub;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadCount();
+    _listenChanges();
+  }
+
+  Future<void> _loadCount() async {
+    try {
+      final result = await Supabase.instance.client
+          .from('staff_notifications')
+          .select('id')
+          .eq('staff_id', widget.staffId)
+          .eq('is_read', false);
+      if (mounted) {
+        setState(() => _unseenCount = (result as List).length);
+      }
+    } catch (_) {}
+  }
+
+  void _listenChanges() {
+    _sub = Supabase.instance.client
+        .from('staff_notifications')
+        .stream(primaryKey: ['id'])
+        .eq('staff_id', widget.staffId)
+        .listen((rows) {
+      final unread = rows.where((r) => r['is_read'] == false).length;
+      if (mounted) setState(() => _unseenCount = unread);
+    });
+  }
+
+  @override
+  void dispose() {
+    _sub?.cancel();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return IconButton(
+      tooltip: 'Notifications',
+      onPressed: () {
+        Navigator.of(context).push(
+          MaterialPageRoute(builder: (_) => const NotificationPage()),
+        );
+      },
+      icon: Stack(
+        clipBehavior: Clip.none,
+        children: [
+          const Icon(Icons.notifications_none_rounded, color: Colors.white),
+          if (_unseenCount > 0)
+            Positioned(
+              right: -2,
+              top: -2,
+              child: Container(
+                padding: const EdgeInsets.all(2),
+                decoration: BoxDecoration(
+                  color: Colors.redAccent,
+                  borderRadius: BorderRadius.circular(999),
+                ),
+                constraints: const BoxConstraints(minWidth: 16, minHeight: 16),
+                child: Center(
+                  child: Text(
+                    _unseenCount > 9 ? '9+' : _unseenCount.toString(),
+                    style: const TextStyle(
+                      color: Colors.white,
+                      fontSize: 10,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                ),
+              ),
+            ),
         ],
       ),
     );
@@ -1043,12 +1060,10 @@ class _SmartBayuLogoCard extends StatelessWidget {
       child: Center(
         child: LayoutBuilder(
           builder: (context, constraints) {
-            // Saiz logo ikut tinggi card (responsive & selamat)
             final logoSize = (constraints.maxHeight * 0.55).clamp(60.0, 110.0);
 
             return Container(
               decoration: BoxDecoration(
-                // Shadow halus (premium, tak keterlaluan)
                 boxShadow: [
                   BoxShadow(
                     color: Colors.black.withOpacity(0.18),

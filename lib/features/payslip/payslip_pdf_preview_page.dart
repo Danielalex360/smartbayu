@@ -16,7 +16,7 @@ class PayslipPdfPreviewPage extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final periodLabel = (payslip['monthLabel'] ?? '-').toString();
+    final periodLabel = (payslip['monthLabel'] ?? payslip['month_label'] ?? '-').toString();
 
     return Scaffold(
       appBar: AppBar(

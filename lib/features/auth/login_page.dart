@@ -1,11 +1,12 @@
 import 'dart:ui';
-import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
-import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 
 import '../home/home_page.dart';
 import 'reset_password_page.dart';
-import '../../services/notification_service.dart'; // 🔔 NOTIFICATION SERVICE
+import '../../services/notification_service.dart';
+import '../../services/supabase_service.dart';
+import '../../services/company_service.dart';
 
 class LoginPage extends StatefulWidget {
   const LoginPage({super.key});
@@ -22,7 +23,7 @@ class _LoginPageState extends State<LoginPage>
 
   bool _obscure = true;
   bool _loading = false;
-  bool _sendingReset = false; // 🔹 status untuk reset via email
+  bool _sendingReset = false;
 
   late AnimationController _anim;
   late Animation<double> _fade;
@@ -55,16 +56,6 @@ class _LoginPageState extends State<LoginPage>
     super.dispose();
   }
 
-  String _titleCaseFromEmail(String email) {
-    if (email.isEmpty) return 'Guest User';
-    final raw = email.split('@').first.replaceAll('.', ' ');
-    return raw
-        .split(' ')
-        .where((s) => s.trim().isNotEmpty)
-        .map((w) => w[0].toUpperCase() + w.substring(1).toLowerCase())
-        .join(' ');
-  }
-
   Future<void> _login() async {
     if (!_formKey.currentState!.validate()) return;
 
@@ -74,97 +65,78 @@ class _LoginPageState extends State<LoginPage>
     setState(() => _loading = true);
 
     try {
-      await FirebaseAuth.instance.signInWithEmailAndPassword(
+      final res = await Supabase.instance.client.auth.signInWithPassword(
         email: email,
         password: password,
       );
 
-      final authUser = FirebaseAuth.instance.currentUser;
-      if (authUser == null) throw 'Ralat dalaman.';
+      if (res.user == null) throw 'Login gagal.';
 
-      // 🔔 START REAL-TIME NOTIFICATION LISTENER UNTUK USER NI
-      await NotificationService.instance.startUserNotificationListener(
-        authUser.uid,
-      );
+      // Load staff context (resolves auth.uid → staff record)
+      final hasStaff = await SupabaseService.instance.loadUserContext();
 
-      final snap = await FirebaseFirestore.instance
-          .collection('users')
-          .doc(authUser.uid)
-          .get();
+      if (!hasStaff) {
+        throw 'Akaun wujud tetapi rekod staff tidak dijumpai. Sila hubungi HR.';
+      }
+
+      final svc = SupabaseService.instance;
+
+      // Check if staff is active
+      final isActive = svc.staffData?['is_active'] as bool? ?? true;
+      if (!isActive) {
+        await SupabaseService.instance.signOut();
+        throw 'Akaun ini tidak aktif.';
+      }
+
+      // Start notification listener
+      if (svc.staffId != null) {
+        await NotificationService.instance.startUserNotificationListener(svc.staffId!);
+      }
 
       if (!mounted) return;
-
-      String displayName = _titleCaseFromEmail(email);
-      String? roleTitle;
-      String siteName = "Bayu Lestari Resort Island";
-      String? photoUrl;
-      bool isHr = email.toLowerCase().startsWith('hr@');
-      bool isActive = true;
-
-      if (snap.exists) {
-        final data = snap.data()!;
-        final n = (data['name'] as String?)?.trim();
-        if (n != null && n.isNotEmpty) displayName = n;
-
-        final r = (data['role'] as String?)?.trim();
-        if (r != null && r.isNotEmpty) {
-          roleTitle = r;
-          if (r.toLowerCase().contains("hr")) isHr = true;
-        }
-
-        final s = (data['site'] as String?)?.trim();
-        if (s != null && s.isNotEmpty) siteName = s;
-
-        final p = (data['photoUrl'] as String?)?.trim();
-        if (p != null && p.isNotEmpty) photoUrl = p;
-
-        final a = data['active'];
-        if (a is bool) isActive = a;
-
-        if (!isActive) throw "Akaun ini tidak aktif.";
-      }
 
       Navigator.of(context).pushReplacement(
         MaterialPageRoute(
           builder: (_) => HomePage(
-            isHr: isHr,
-            displayName: displayName,
-            roleTitle: roleTitle,
-            siteName: siteName,
-            photoUrl: photoUrl,
+            isHr: svc.isHr,
+            displayName: svc.fullName.isNotEmpty ? svc.fullName : email,
+            roleTitle: svc.isHr ? 'HR / Manager' : 'Staff',
+            siteName: CompanyService.instance.siteName,
+            photoUrl: svc.photoUrl,
             onLogout: (ctx) async {
-              // 🔕 STOP LISTENER BILA LOGOUT
-              await NotificationService.instance
-                  .disposeUserNotificationListener();
-
-              await FirebaseAuth.instance.signOut();
-              Navigator.of(ctx).pushAndRemoveUntil(
-                MaterialPageRoute(builder: (_) => const LoginPage()),
-                    (route) => false,
-              );
+              await NotificationService.instance.disposeUserNotificationListener();
+              await SupabaseService.instance.signOut();
+              if (ctx.mounted) {
+                Navigator.of(ctx).pushAndRemoveUntil(
+                  MaterialPageRoute(builder: (_) => const LoginPage()),
+                  (route) => false,
+                );
+              }
             },
           ),
         ),
       );
+    } on AuthException catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Login gagal: ${e.message}')),
+      );
     } catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text("Login gagal: $e")),
+        SnackBar(content: Text('Login gagal: $e')),
       );
     } finally {
       if (mounted) setState(() => _loading = false);
     }
   }
 
-  // 🔹 RESET PASSWORD VIA EMAIL (Firebase built-in)
   Future<void> _sendPasswordResetEmail() async {
     final email = emailCtrl.text.trim();
 
     if (email.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Sila masukkan email akaun dahulu.'),
-        ),
+        const SnackBar(content: Text('Sila masukkan email akaun dahulu.')),
       );
       return;
     }
@@ -172,7 +144,7 @@ class _LoginPageState extends State<LoginPage>
     setState(() => _sendingReset = true);
 
     try {
-      await FirebaseAuth.instance.sendPasswordResetEmail(email: email);
+      await Supabase.instance.client.auth.resetPasswordForEmail(email);
 
       if (!mounted) return;
       await showDialog(
@@ -181,8 +153,8 @@ class _LoginPageState extends State<LoginPage>
           title: const Text('Link reset dihantar'),
           content: Text(
             'Kami telah menghantar link reset password ke:\n\n'
-                '$email\n\n'
-                'Sila buka email tersebut dan ikut arahan untuk set password baru.',
+            '$email\n\n'
+            'Sila buka email tersebut dan ikut arahan untuk set password baru.',
           ),
           actions: [
             TextButton(
@@ -192,72 +164,42 @@ class _LoginPageState extends State<LoginPage>
           ],
         ),
       );
-    } on FirebaseAuthException catch (e) {
-      String msg = 'Gagal hantar link reset password.';
-      if (e.code == 'user-not-found') {
-        msg = 'Akaun dengan email ini tidak wujud dalam sistem.';
-      } else if (e.code == 'invalid-email') {
-        msg = 'Format email tidak sah.';
-      }
-
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(msg)),
-      );
     } catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Ralat tidak dijangka: $e')),
+        SnackBar(content: Text('Gagal hantar link reset: $e')),
       );
     } finally {
       if (mounted) setState(() => _sendingReset = false);
     }
   }
 
-  // ───────────────────────────────── UI ─────────────────────────────────
+  // UI unchanged from original
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       resizeToAvoidBottomInset: true,
       body: Stack(
         children: [
-          // 🌊 FULL OCEAN BACKGROUND
           Positioned.fill(
-            child: Image.asset(
-              "assets/images/bg_ocean.png",
-              fit: BoxFit.cover,
-            ),
+            child: Image.asset("assets/images/bg_ocean.png", fit: BoxFit.cover),
           ),
-
-          // overlay gelap sikit
           Positioned.fill(
-            child: Container(
-              color: Colors.black.withOpacity(0.18),
-            ),
+            child: Container(color: Colors.black.withOpacity(0.18)),
           ),
-
-          // ◆ TOP SMARTBAYU LOGO
           Positioned(
-            top: 110,
-            left: 0,
-            right: 0,
+            top: 110, left: 0, right: 0,
             child: Center(
               child: SizedBox(
-                width: 240,
-                height: 240,
-                child: Image.asset(
-                  "assets/logos/smartbayu_logo.png",
-                  fit: BoxFit.contain,
-                ),
+                width: 240, height: 240,
+                child: Image.asset("assets/logos/smartbayu_logo.png", fit: BoxFit.contain),
               ),
             ),
           ),
-
           SafeArea(
             child: Center(
               child: SingleChildScrollView(
-                padding:
-                const EdgeInsets.symmetric(horizontal: 22, vertical: 20),
+                padding: const EdgeInsets.symmetric(horizontal: 22, vertical: 20),
                 child: FadeTransition(
                   opacity: _fade,
                   child: SlideTransition(
@@ -268,8 +210,6 @@ class _LoginPageState extends State<LoginPage>
                         children: [
                           const SizedBox(height: 210),
                           const SizedBox(height: 20),
-
-                          // FORM CARD
                           Container(
                             decoration: BoxDecoration(
                               color: Colors.white,
@@ -283,8 +223,7 @@ class _LoginPageState extends State<LoginPage>
                               ],
                             ),
                             child: Padding(
-                              padding:
-                              const EdgeInsets.fromLTRB(18, 20, 18, 20),
+                              padding: const EdgeInsets.fromLTRB(18, 20, 18, 20),
                               child: Form(
                                 key: _formKey,
                                 child: Column(
@@ -292,148 +231,80 @@ class _LoginPageState extends State<LoginPage>
                                     _IosTextField(
                                       controller: emailCtrl,
                                       label: "Email",
-                                      keyboardType:
-                                      TextInputType.emailAddress,
+                                      keyboardType: TextInputType.emailAddress,
                                       validator: (v) {
                                         final value = v?.trim() ?? "";
-                                        if (value.isEmpty) {
-                                          return "Email diperlukan";
-                                        }
-                                        final ok = RegExp(
-                                          r'^[^\s@]+@[^\s@]+\.[^\s@]+$',
-                                        ).hasMatch(value);
-                                        if (!ok) {
-                                          return "Format email tidak sah";
-                                        }
+                                        if (value.isEmpty) return "Email diperlukan";
+                                        final ok = RegExp(r'^[^\s@]+@[^\s@]+\.[^\s@]+$').hasMatch(value);
+                                        if (!ok) return "Format email tidak sah";
                                         return null;
                                       },
                                     ),
-
                                     const SizedBox(height: 14),
-
                                     _IosTextField(
                                       controller: passCtrl,
                                       label: "Password",
                                       obscure: _obscure,
                                       suffixIcon: IconButton(
                                         icon: Icon(
-                                          _obscure
-                                              ? Icons.visibility_rounded
-                                              : Icons
-                                              .visibility_off_rounded,
-                                          size: 20,
-                                          color: Colors.grey.shade500,
+                                          _obscure ? Icons.visibility_rounded : Icons.visibility_off_rounded,
+                                          size: 20, color: Colors.grey.shade500,
                                         ),
-                                        onPressed: () {
-                                          setState(
-                                                  () => _obscure = !_obscure);
-                                        },
+                                        onPressed: () => setState(() => _obscure = !_obscure),
                                       ),
                                       validator: (v) {
                                         final value = v?.trim() ?? "";
-                                        if (value.isEmpty) {
-                                          return "Password diperlukan";
-                                        }
-                                        if (value.length < 6) {
-                                          return "Minimum 6 aksara";
-                                        }
+                                        if (value.isEmpty) return "Password diperlukan";
+                                        if (value.length < 6) return "Minimum 6 aksara";
                                         return null;
                                       },
                                     ),
-
                                     const SizedBox(height: 18),
-
-                                    // 🔹 LOGIN BUTTON – hijau laut + font putih
                                     SizedBox(
                                       height: 48,
                                       width: double.infinity,
                                       child: ElevatedButton(
                                         style: ElevatedButton.styleFrom(
-                                          backgroundColor:
-                                          const Color(0xFF0EA5A4),
+                                          backgroundColor: const Color(0xFF0EA5A4),
                                           foregroundColor: Colors.white,
-                                          shape: RoundedRectangleBorder(
-                                            borderRadius:
-                                            BorderRadius.circular(14),
-                                          ),
+                                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
                                           elevation: 6,
                                         ),
                                         onPressed: _loading ? null : _login,
                                         child: _loading
                                             ? const SizedBox(
-                                          height: 22,
-                                          width: 22,
-                                          child:
-                                          CircularProgressIndicator(
-                                            strokeWidth: 2.4,
-                                            valueColor:
-                                            AlwaysStoppedAnimation<
-                                                Color>(
-                                              Colors.white,
-                                            ),
-                                          ),
-                                        )
-                                            : const Text(
-                                          "Login",
-                                          style: TextStyle(
-                                            fontWeight:
-                                            FontWeight.w600,
-                                            color: Colors.white,
-                                          ),
-                                        ),
+                                                height: 22, width: 22,
+                                                child: CircularProgressIndicator(
+                                                  strokeWidth: 2.4,
+                                                  valueColor: AlwaysStoppedAnimation<Color>(Colors.white),
+                                                ),
+                                              )
+                                            : const Text("Login", style: TextStyle(fontWeight: FontWeight.w600, color: Colors.white)),
                                       ),
                                     ),
-
                                     const SizedBox(height: 8),
-
-                                    // 🔹 FORGOT PASSWORD VIA EMAIL
                                     TextButton(
-                                      onPressed: _sendingReset
-                                          ? null
-                                          : _sendPasswordResetEmail,
+                                      onPressed: _sendingReset ? null : _sendPasswordResetEmail,
                                       child: _sendingReset
-                                          ? const SizedBox(
-                                        width: 16,
-                                        height: 16,
-                                        child:
-                                        CircularProgressIndicator(
-                                          strokeWidth: 2,
-                                        ),
-                                      )
+                                          ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2))
                                           : const Text("Forgot password?"),
                                     ),
-
-                                    // 🔹 FIRST-TIME DEFAULT HR PASSWORD
                                     TextButton(
                                       onPressed: () {
-                                        Navigator.push(
-                                          context,
-                                          MaterialPageRoute(
-                                            builder: (_) =>
-                                            const ResetPasswordPage(),
-                                          ),
-                                        );
+                                        Navigator.push(context, MaterialPageRoute(builder: (_) => const ResetPasswordPage()));
                                       },
-                                      child: const Text(
-                                        "First-time login (default HR password)",
-                                        style: TextStyle(fontSize: 12),
-                                      ),
+                                      child: const Text("First-time login (default HR password)", style: TextStyle(fontSize: 12)),
                                     ),
                                   ],
                                 ),
                               ),
                             ),
                           ),
-
                           const SizedBox(height: 10),
-
                           Text(
                             "Tip: sila hubungi HR untuk pendaftaran akaun",
-                            style: TextStyle(
-                              color: Colors.black.withOpacity(0.7),
-                              fontSize: 12,
-                            ),
-                          )
+                            style: TextStyle(color: Colors.black.withOpacity(0.7), fontSize: 12),
+                          ),
                         ],
                       ),
                     ),
@@ -448,7 +319,6 @@ class _LoginPageState extends State<LoginPage>
   }
 }
 
-/// 🔹 Reusable iOS-style text field
 class _IosTextField extends StatelessWidget {
   const _IosTextField({
     required this.controller,
@@ -472,10 +342,7 @@ class _IosTextField extends StatelessWidget {
       decoration: BoxDecoration(
         color: const Color(0xFFF9FAFB),
         borderRadius: BorderRadius.circular(14),
-        border: Border.all(
-          color: const Color(0xFFE5E7EB),
-          width: 1,
-        ),
+        border: Border.all(color: const Color(0xFFE5E7EB), width: 1),
       ),
       child: TextFormField(
         controller: controller,
@@ -485,10 +352,7 @@ class _IosTextField extends StatelessWidget {
         decoration: InputDecoration(
           labelText: label,
           border: InputBorder.none,
-          contentPadding: const EdgeInsets.symmetric(
-            horizontal: 14,
-            vertical: 12,
-          ),
+          contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
           suffixIcon: suffixIcon,
         ),
       ),

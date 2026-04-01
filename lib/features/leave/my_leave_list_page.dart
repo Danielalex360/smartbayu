@@ -1,6 +1,8 @@
-import 'package:cloud_firestore/cloud_firestore.dart';
-import 'package:firebase_auth/firebase_auth.dart';
+// lib/features/leave/my_leave_list_page.dart
 import 'package:flutter/material.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
+
+import '../../services/supabase_service.dart';
 
 class MyLeaveListPage extends StatefulWidget {
   const MyLeaveListPage({super.key});
@@ -14,13 +16,17 @@ class _MyLeaveListPageState extends State<MyLeaveListPage> {
 
   // ───────────── Helpers ─────────────
 
-  String _dateRangeText(Timestamp? startTs, Timestamp? endTs) {
-    if (startTs == null || endTs == null) return '-';
-    final s = startTs.toDate();
-    final e = endTs.toDate();
-    String two(int n) => n.toString().padLeft(2, '0');
-    String d(DateTime d) => '${two(d.day)}/${two(d.month)}/${d.year}';
-    return '${d(s)}  →  ${d(e)}';
+  String _dateRangeText(String? startStr, String? endStr) {
+    if (startStr == null || endStr == null) return '-';
+    try {
+      final s = DateTime.parse(startStr);
+      final e = DateTime.parse(endStr);
+      String two(int n) => n.toString().padLeft(2, '0');
+      String d(DateTime d) => '${two(d.day)}/${two(d.month)}/${d.year}';
+      return '${d(s)}  →  ${d(e)}';
+    } catch (_) {
+      return '-';
+    }
   }
 
   Color _statusColor(String status) {
@@ -31,19 +37,17 @@ class _MyLeaveListPageState extends State<MyLeaveListPage> {
     return Colors.blueGrey;
   }
 
-  Stream<QuerySnapshot<Map<String, dynamic>>> _myLeaveStream() {
-    final user = FirebaseAuth.instance.currentUser;
-    if (user == null) {
-      // kalau tak login, bagi stream kosong
-      return const Stream<QuerySnapshot<Map<String, dynamic>>>.empty();
+  Stream<List<Map<String, dynamic>>> _myLeaveStream() {
+    final staffId = SupabaseService.instance.staffId;
+    if (staffId == null) {
+      return const Stream<List<Map<String, dynamic>>>.empty();
     }
 
-    return FirebaseFirestore.instance
-        .collection('users')
-        .doc(user.uid)
-        .collection('leaveRequests')
-        .orderBy('createdAt', descending: true)
-        .snapshots();
+    return Supabase.instance.client
+        .from('leave_records')
+        .stream(primaryKey: ['id'])
+        .eq('staff_id', staffId)
+        .order('created_at', ascending: false);
   }
 
   @override
@@ -201,7 +205,7 @@ class _MyLeaveListPageState extends State<MyLeaveListPage> {
 
             // ───── List + dynamic summary ─────
             Expanded(
-              child: StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+              child: StreamBuilder<List<Map<String, dynamic>>>(
                 stream: _myLeaveStream(),
                 builder: (context, snap) {
                   if (snap.connectionState == ConnectionState.waiting) {
@@ -212,20 +216,20 @@ class _MyLeaveListPageState extends State<MyLeaveListPage> {
                       child: Text('Error: ${snap.error}'),
                     );
                   }
-                  if (!snap.hasData || snap.data!.docs.isEmpty) {
+                  if (!snap.hasData || snap.data!.isEmpty) {
                     return _EmptyStateWidget(onApplyTap: () {
                       Navigator.of(context)
                           .pop(); // balik, user boleh tekan Apply Leave di home
                     });
                   }
 
-                  final allDocs = snap.data!.docs;
+                  final allDocs = snap.data!;
 
                   // Kira summary status
                   int pending = 0, approved = 0, rejected = 0;
                   for (final d in allDocs) {
                     final status =
-                    (d.data()['status'] ?? 'pending').toString().toLowerCase();
+                    (d['status'] ?? 'pending').toString().toLowerCase();
                     if (status == 'approved') {
                       approved++;
                     } else if (status == 'rejected') {
@@ -240,8 +244,7 @@ class _MyLeaveListPageState extends State<MyLeaveListPage> {
                   // Filter ikut status
                   if (_statusFilter != 'All') {
                     final target = _statusFilter.toLowerCase();
-                    docs = docs.where((doc) {
-                      final data = doc.data();
+                    docs = docs.where((data) {
                       final status =
                       (data['status'] ?? '').toString().toLowerCase();
                       return status == target;
@@ -273,28 +276,24 @@ class _MyLeaveListPageState extends State<MyLeaveListPage> {
                               horizontal: 16, vertical: 8),
                           itemCount: docs.length,
                           itemBuilder: (context, index) {
-                            final doc = docs[index];
-                            final data = doc.data();
+                            final data = docs[index];
 
                             final leaveType =
-                            (data['leaveType'] ?? 'Leave').toString();
-                            final siteName =
-                            (data['siteName'] ?? 'Unknown Site').toString();
+                            (data['leave_type'] ?? 'Leave').toString();
                             final status =
                             (data['status'] ?? 'pending').toString().toLowerCase();
                             final reason = (data['reason'] ?? '').toString();
-                            final startTs = data['startDate'] as Timestamp?;
-                            final endTs = data['endDate'] as Timestamp?;
-                            final createdAt = data['createdAt'] as Timestamp?;
+                            final startStr = data['start_date']?.toString();
+                            final endStr = data['end_date']?.toString();
+                            final createdAt = data['created_at']?.toString();
                             final createdStr = createdAt != null
-                                ? createdAt
-                                .toDate()
-                                .toLocal()
-                                .toString()
-                                .substring(0, 19)
+                                ? DateTime.tryParse(createdAt)
+                                    ?.toLocal()
+                                    .toString()
+                                    .substring(0, 19) ?? '-'
                                 : '-';
                             final hrComment =
-                            (data['hrComment'] ?? '').toString(); // from HR
+                            (data['hr_notes'] ?? '').toString();
 
                             final statusLabel = status.isNotEmpty
                                 ? status[0].toUpperCase() + status.substring(1)
@@ -314,11 +313,10 @@ class _MyLeaveListPageState extends State<MyLeaveListPage> {
                                   ),
                                   builder: (ctx) => MyLeaveDetailSheet(
                                     leaveType: leaveType,
-                                    siteName: siteName,
                                     statusLabel: statusLabel,
                                     statusColor: _statusColor(statusLabel),
                                     dateRangeText:
-                                    _dateRangeText(startTs, endTs),
+                                    _dateRangeText(startStr, endStr),
                                     createdStr: createdStr,
                                     reason: reason,
                                     hrComment: hrComment,
@@ -401,17 +399,6 @@ class _MyLeaveListPageState extends State<MyLeaveListPage> {
                                                           FontWeight.w700,
                                                         ),
                                                       ),
-                                                      const SizedBox(height: 2),
-                                                      Text(
-                                                        siteName,
-                                                        style: TextStyle(
-                                                          fontSize: 12,
-                                                          color: Colors
-                                                              .grey
-                                                              .withValues(
-                                                              alpha: 0.9),
-                                                        ),
-                                                      ),
                                                     ],
                                                   ),
                                                 ),
@@ -482,7 +469,7 @@ class _MyLeaveListPageState extends State<MyLeaveListPage> {
                                                 Expanded(
                                                   child: Text(
                                                     _dateRangeText(
-                                                        startTs, endTs),
+                                                        startStr, endStr),
                                                     style: const TextStyle(
                                                       fontWeight:
                                                       FontWeight.w600,
@@ -600,7 +587,7 @@ class _EmptyStateWidget extends StatelessWidget {
   }
 }
 
-/// Summary row (Pending / Approved / Rejected) – iOS style pills
+/// Summary row (Pending / Approved / Rejected) - iOS style pills
 class _StatusSummaryRow extends StatelessWidget {
   const _StatusSummaryRow({
     required this.pending,
@@ -699,7 +686,6 @@ class _SummaryPill extends StatelessWidget {
 /// Bottom sheet detail untuk "My Leave" (staff view)
 class MyLeaveDetailSheet extends StatelessWidget {
   final String leaveType;
-  final String siteName;
   final String statusLabel;
   final Color statusColor;
   final String dateRangeText;
@@ -710,7 +696,6 @@ class MyLeaveDetailSheet extends StatelessWidget {
   const MyLeaveDetailSheet({
     super.key,
     required this.leaveType,
-    required this.siteName,
     required this.statusLabel,
     required this.statusColor,
     required this.dateRangeText,
@@ -759,14 +744,6 @@ class MyLeaveDetailSheet extends StatelessWidget {
                         style: const TextStyle(
                           fontSize: 18,
                           fontWeight: FontWeight.w700,
-                        ),
-                      ),
-                      const SizedBox(height: 4),
-                      Text(
-                        siteName,
-                        style: TextStyle(
-                          fontSize: 13,
-                          color: Colors.grey.shade700,
                         ),
                       ),
                     ],

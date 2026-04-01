@@ -1,9 +1,9 @@
 // lib/features/leave/apply_leave_page.dart
-import 'package:cloud_firestore/cloud_firestore.dart';
-import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 
-import '../../services/notification_service.dart'; // 🔔 NOTIFICATION SERVICE
+import '../../services/notification_service.dart';
+import '../../services/supabase_service.dart';
 
 class ApplyLeavePage extends StatefulWidget {
   const ApplyLeavePage({super.key});
@@ -79,7 +79,7 @@ class _ApplyLeavePageState extends State<ApplyLeavePage> {
     return _endDate!.difference(_startDate!).inDays + 1;
   }
 
-  // ───────────────── FIRESTORE SUBMIT ─────────────────
+  // ───────────────── SUPABASE SUBMIT ─────────────────
 
   Future<void> _submit() async {
     if (_submitting) return;
@@ -107,65 +107,54 @@ class _ApplyLeavePageState extends State<ApplyLeavePage> {
     });
 
     try {
-      final user = FirebaseAuth.instance.currentUser;
-      if (user == null) {
-        throw Exception('User not logged in.');
+      final svc = SupabaseService.instance;
+      final staffId = svc.staffId;
+      final companyId = svc.companyId;
+
+      if (staffId == null || companyId == null) {
+        throw Exception('User not logged in or staff record not found.');
       }
 
-      final staffUid = user.uid;
+      final staffName = svc.fullName.isNotEmpty ? svc.fullName : 'Unknown Staff';
 
-      // STEP 1: Baca profile staff daripada Firestore
-      final profileSnap =
-      await FirebaseFirestore.instance.collection('users').doc(staffUid).get();
+      final startIso = DateTime(_startDate!.year, _startDate!.month, _startDate!.day)
+          .toIso8601String()
+          .substring(0, 10);
+      final endIso = DateTime(_endDate!.year, _endDate!.month, _endDate!.day)
+          .toIso8601String()
+          .substring(0, 10);
 
-      final profile = profileSnap.data() ?? {};
+      // STEP 1: Insert into leave_records table
+      final inserted = await Supabase.instance.client
+          .from('leave_records')
+          .insert({
+            'staff_id': staffId,
+            'company_id': companyId,
+            'leave_type': _leaveType,
+            'start_date': startIso,
+            'end_date': endIso,
+            'days': _totalDays,
+            'reason': _reasonController.text.trim(),
+            'status': 'pending',
+          })
+          .select('id')
+          .single();
 
-      // STEP 2: Ambil nama & site daripada profile
-      final staffName = (profile['name'] ??
-          profile['fullName'] ??
-          user.displayName ??
-          'Unknown Staff')
-          .toString();
-
-      final siteName =
-      (profile['siteName'] ?? profile['site'] ?? 'Unknown Site').toString();
-
-      final startTs = Timestamp.fromDate(
-        DateTime(_startDate!.year, _startDate!.month, _startDate!.day),
-      );
-      final endTs = Timestamp.fromDate(
-        DateTime(_endDate!.year, _endDate!.month, _endDate!.day),
-      );
-
-      // STEP 3: Simpan dalam subcollection leaveRequests di bawah users/{uid}
-      final leaveRef = await FirebaseFirestore.instance
-          .collection('users')
-          .doc(staffUid)
-          .collection('leaveRequests')
-          .add({
-        'staffUid': staffUid,
-        'staffName': staffName,
-        'siteName': siteName,
-        'leaveType': _leaveType,
-        'startDate': startTs,
-        'endDate': endTs,
-        'reason': _reasonController.text.trim(),
-        'status': 'pending',
-        'createdAt': FieldValue.serverTimestamp(),
-      });
+      final recordId = inserted['id'].toString();
 
       // TEXT TARIKH UNTUK NOTI
       final startText = _formatDate(_startDate);
       final endText = _formatDate(_endDate);
       final rangeText = '$startText to $endText';
 
-      // ── STEP 4A: NOTI UNTUK STAFF SENDIRI (BELL + POPUP LOCAL) ──
+      // STEP 2A: NOTI UNTUK STAFF SENDIRI (BELL + POPUP LOCAL)
       await NotificationService.instance.push(
-        userId: staffUid,
-        type: 'leave_request', // rekod untuk bell staff
+        staffId: staffId,
+        type: 'leave_request',
         title: 'Leave request submitted',
         message:
         'Your $_leaveType from $rangeText has been sent to HR for approval.',
+        docId: recordId,
       );
 
       // popup terus di phone staff (walaupun dia tengah dalam page ni)
@@ -176,45 +165,26 @@ class _ApplyLeavePageState extends State<ApplyLeavePage> {
         data: {
           'type': 'leave',
           'screen': 'leave',
-          'docId': leaveRef.id,
+          'docId': recordId,
         },
       );
 
-      // ── STEP 4B: NOTI UNTUK SEMUA HR (BELL + FCM POPUP) ──
-      final hrSnap = await FirebaseFirestore.instance
-          .collection('users')
-          .where('role', isEqualTo: 'hr')
-          .get();
+      // STEP 2B: NOTI UNTUK SEMUA HR (BELL via staff_notifications)
+      final hrRows = await Supabase.instance.client
+          .from('staff')
+          .select('id')
+          .eq('company_id', companyId)
+          .inFilter('app_role', ['hr', 'admin', 'manager']);
 
-      final hrTokens = <String>[];
-
-      for (final doc in hrSnap.docs) {
-        final hrUid = doc.id;
-        final hrData = doc.data();
-        final token = (hrData['fcmToken'] ?? '').toString();
-
-        // rekod dalam bell HR
+      for (final hrRow in hrRows) {
+        final hrStaffId = hrRow['id'] as String;
         await NotificationService.instance.push(
-          userId: hrUid,
+          staffId: hrStaffId,
           type: 'leave_request',
           title: 'New leave request',
           message:
-          '$staffName requested $_leaveType ($rangeText) from $siteName.',
-        );
-
-        if (token.isNotEmpty) {
-          hrTokens.add(token);
-        }
-      }
-
-      // Hantar FCM ke device HR (kalau ada token)
-      if (hrTokens.isNotEmpty) {
-        await NotificationService.instance.sendSmartBayuEvent(
-          targetTokens: hrTokens,
-          title: 'New leave request',
-          body: '$staffName requested $_leaveType ($rangeText) from $siteName.',
-          type: 'leave', // untuk routing / tab leave HR
-          docId: leaveRef.id,
+          '$staffName requested $_leaveType ($rangeText).',
+          docId: recordId,
         );
       }
 

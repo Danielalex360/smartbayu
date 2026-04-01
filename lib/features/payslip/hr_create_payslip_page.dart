@@ -1,8 +1,9 @@
 // lib/features/payslip/hr_create_payslip_page.dart
-import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 
-import '../../services/notification_service.dart'; // 🔔 IMPORT
+import '../../services/notification_service.dart';
+import '../../services/supabase_service.dart';
 
 class HrCreatePayslipPage extends StatefulWidget {
   const HrCreatePayslipPage({super.key});
@@ -14,17 +15,17 @@ class HrCreatePayslipPage extends StatefulWidget {
 class _HrCreatePayslipPageState extends State<HrCreatePayslipPage> {
   final _formKey = GlobalKey<FormState>();
 
-  String? _selectedStaffUid;
+  String? _selectedStaffId;
   String? _selectedStaffName;
 
-  // ─── Controllers ────────────────────────────────────────────────────────────
+  // Controllers
   final _monthController = TextEditingController(); // e.g. November 2025
   final _basicController = TextEditingController();
   final _allowanceController = TextEditingController();
   final _overtimeController = TextEditingController();
   final _deductController = TextEditingController();
-  final _kwspController = TextEditingController(); // NEW
-  final _socsoController = TextEditingController(); // NEW
+  final _kwspController = TextEditingController();
+  final _socsoController = TextEditingController();
   final _pdfUrlController = TextEditingController();
 
   bool _saving = false;
@@ -50,32 +51,36 @@ class _HrCreatePayslipPageState extends State<HrCreatePayslipPage> {
   }
 
   // ────────────────────────────────────────────────────────────────────────────
-  //  Fetch senarai staff (termasuk HR) dari collection "users"
+  //  Fetch staff list from Supabase `staff` table
   // ────────────────────────────────────────────────────────────────────────────
   Future<List<_StaffOption>> _fetchStaffList() async {
-    final snap = await FirebaseFirestore.instance.collection('users').get();
+    final companyId = SupabaseService.instance.companyId;
+    if (companyId == null) return [];
 
-    return snap.docs
+    final rows = await Supabase.instance.client
+        .from('staff')
+        .select('id, full_name, email, department')
+        .eq('company_id', companyId)
+        .order('full_name');
+
+    return (rows as List)
         .map((d) {
-      final data = d.data();
-      final name = (data['displayName'] ??
-          data['name'] ??
-          data['email'] ??
+      final name = (d['full_name'] ??
+          d['email'] ??
           'Unknown')
           .toString();
 
       return _StaffOption(
-        uid: d.id,
+        uid: d['id'] as String,
         name: name,
-        site: (data['siteName'] ?? '').toString(),
+        site: (d['department'] ?? '').toString(),
       );
     })
-        .toList()
-      ..sort((a, b) => a.name.toLowerCase().compareTo(b.name.toLowerCase()));
+        .toList();
   }
 
   // ────────────────────────────────────────────────────────────────────────────
-  //  Kira Net Pay – juga digunakan untuk live preview
+  //  Calculate Net Pay (live preview)
   // ────────────────────────────────────────────────────────────────────────────
   double _calculateNetPay() {
     final basic = double.tryParse(_basicController.text) ?? 0;
@@ -89,13 +94,12 @@ class _HrCreatePayslipPageState extends State<HrCreatePayslipPage> {
   }
 
   // ────────────────────────────────────────────────────────────────────────────
-  //  Save payslip ke Firestore + create notification
-  //  Path: users/{staffUid}/payslips/{autoId}
+  //  Save payslip to Supabase `payslips` table + send notification
   // ────────────────────────────────────────────────────────────────────────────
   Future<void> _savePayslip() async {
     if (!_formKey.currentState!.validate()) return;
 
-    if (_selectedStaffUid == null) {
+    if (_selectedStaffId == null) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Please select a staff first.')),
       );
@@ -109,38 +113,37 @@ class _HrCreatePayslipPageState extends State<HrCreatePayslipPage> {
     final kwsp = double.tryParse(_kwspController.text) ?? 0;
     final socso = double.tryParse(_socsoController.text) ?? 0;
     final netPay = _calculateNetPay();
+    final grossPay = basic + allowance + overtime;
     final monthLabel = _monthController.text.trim();
     final pdfUrl = _pdfUrlController.text.trim();
+    final companyId = SupabaseService.instance.companyId;
 
     setState(() => _saving = true);
 
     try {
-      // ── 1) Simpan payslip ke Firestore ────────────────────────────────
-      await FirebaseFirestore.instance
-          .collection('users')
-          .doc(_selectedStaffUid)
-          .collection('payslips')
-          .add({
-        'monthLabel': monthLabel,
-        'basicSalary': basic,
-        'allowance': allowance,
-        'overtime': overtime,
-        'deductions': deductions,
-        'kwsp': kwsp,
-        'socso': socso,
-        'netPay': netPay,
-        'pdfUrl': pdfUrl,
-        'createdAt': FieldValue.serverTimestamp(),
-        'staffName': _selectedStaffName,
-        'staffUid': _selectedStaffUid, // optional, senang query HR
+      // 1) Insert payslip into Supabase
+      await Supabase.instance.client.from('payslips').insert({
+        'staff_id': _selectedStaffId,
+        'company_id': companyId,
+        'month_label': monthLabel,
+        'basic_salary': basic,
+        'total_allowances': allowance,
+        'allowances': {'overtime': overtime},
+        'total_deductions': deductions + kwsp + socso,
+        'deductions': {'other': deductions},
+        'epf_employee': kwsp,
+        'socso_employee': socso,
+        'gross_pay': grossPay,
+        'net_pay': netPay,
+        if (pdfUrl.isNotEmpty) 'pdf_url': pdfUrl,
       });
 
-      // ── 2) Hantar notification kepada staff (bell + popup jika listener on) ─
-      if (_selectedStaffUid != null && _selectedStaffUid!.isNotEmpty) {
+      // 2) Send notification to staff
+      if (_selectedStaffId != null && _selectedStaffId!.isNotEmpty) {
         final prettyNetPay = netPay.toStringAsFixed(2);
 
         await NotificationService.instance.push(
-          userId: _selectedStaffUid!,
+          staffId: _selectedStaffId!,
           title: 'Payslip Ready',
           message:
           'Your payslip for $monthLabel is now available.\nNet Pay: RM $prettyNetPay.',
@@ -148,7 +151,7 @@ class _HrCreatePayslipPageState extends State<HrCreatePayslipPage> {
         );
       }
 
-      // ── 3) Popup local untuk HR sendiri (confirmation) ─────────────────
+      // 3) Local notification for HR (confirmation)
       await NotificationService.instance.showLocal(
         title: 'Payslip Created',
         body:
@@ -164,7 +167,7 @@ class _HrCreatePayslipPageState extends State<HrCreatePayslipPage> {
         const SnackBar(content: Text('Payslip saved successfully.')),
       );
 
-      Navigator.of(context).pop(); // balik ke HR panel
+      Navigator.of(context).pop();
     } catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
@@ -212,7 +215,7 @@ class _HrCreatePayslipPageState extends State<HrCreatePayslipPage> {
             final staffList = snap.data ?? [];
             if (staffList.isEmpty) {
               return const Center(
-                child: Text('No staff found in users collection.'),
+                child: Text('No staff found.'),
               );
             }
 
@@ -225,7 +228,7 @@ class _HrCreatePayslipPageState extends State<HrCreatePayslipPage> {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    // ─── Card: Staff & period ───────────────────────────────
+                    // Card: Staff & period
                     Container(
                       width: double.infinity,
                       padding: const EdgeInsets.all(14),
@@ -299,11 +302,11 @@ class _HrCreatePayslipPageState extends State<HrCreatePayslipPage> {
                                 ),
                               );
                             }).toList(),
-                            value: _selectedStaffUid,
+                            value: _selectedStaffId,
                             onChanged: (val) {
                               if (val == null) return;
                               setState(() {
-                                _selectedStaffUid = val;
+                                _selectedStaffId = val;
                                 final staff = staffList.firstWhere(
                                       (s) => s.uid == val,
                                   orElse: () => staffList.first,
@@ -333,7 +336,7 @@ class _HrCreatePayslipPageState extends State<HrCreatePayslipPage> {
 
                     const SizedBox(height: 16),
 
-                    // ─── Card: Salary breakdown ─────────────────────────────
+                    // Card: Salary breakdown
                     Container(
                       width: double.infinity,
                       padding: const EdgeInsets.all(14),
@@ -429,7 +432,7 @@ class _HrCreatePayslipPageState extends State<HrCreatePayslipPage> {
 
                     const SizedBox(height: 16),
 
-                    // ─── Optional PDF URL ───────────────────────────────────
+                    // Optional PDF URL
                     Container(
                       width: double.infinity,
                       padding: const EdgeInsets.all(14),
@@ -457,7 +460,7 @@ class _HrCreatePayslipPageState extends State<HrCreatePayslipPage> {
 
                     const SizedBox(height: 20),
 
-                    // ─── Save button ────────────────────────────────────────
+                    // Save button
                     SizedBox(
                       width: double.infinity,
                       child: FilledButton(
