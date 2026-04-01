@@ -43,3 +43,19 @@ app.*.map.json
 /android/app/debug
 /android/app/profile
 /android/app/release
+
+# Android build intermediates
+/android/app/build/
+
+# iOS
+ios/Pods/
+ios/.symlinks/
+ios/Flutter/Flutter.framework
+ios/Flutter/Flutter.podspec
+ios/Flutter/ephemeral/
+
+# Fastlane
+ios/fastlane/report.xml
+ios/fastlane/Preview.html
+ios/fastlane/screenshots
+ios/fastlane/test_output

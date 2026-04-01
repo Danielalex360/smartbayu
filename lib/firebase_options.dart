@@ -26,10 +26,7 @@ class DefaultFirebaseOptions {
       case TargetPlatform.android:
         return android;
       case TargetPlatform.iOS:
-        throw UnsupportedError(
-          'DefaultFirebaseOptions have not been configured for ios - '
-          'you can reconfigure this by running the FlutterFire CLI again.',
-        );
+        return ios;
       case TargetPlatform.macOS:
         throw UnsupportedError(
           'DefaultFirebaseOptions have not been configured for macos - '
@@ -58,5 +55,19 @@ class DefaultFirebaseOptions {
     messagingSenderId: '711197187411',
     projectId: 'smartbayu-2d2d5',
     storageBucket: 'smartbayu-2d2d5.firebasestorage.app',
+  );
+
+  // TODO: Replace these placeholder values after registering iOS app in Firebase Console:
+  //   1. Go to https://console.firebase.google.com/project/smartbayu-2d2d5
+  //   2. Add iOS app with bundle ID: my.bayulestari.smartbayu
+  //   3. Download GoogleService-Info.plist → place in ios/Runner/
+  //   4. Copy the values from GoogleService-Info.plist into the fields below
+  static const FirebaseOptions ios = FirebaseOptions(
+    apiKey: 'YOUR_IOS_API_KEY',        // GOOGLE_API_KEY from GoogleService-Info.plist
+    appId: 'YOUR_IOS_APP_ID',          // GOOGLE_APP_ID from GoogleService-Info.plist
+    messagingSenderId: '711197187411',  // Same project, same sender ID
+    projectId: 'smartbayu-2d2d5',
+    storageBucket: 'smartbayu-2d2d5.firebasestorage.app',
+    iosBundleId: 'my.bayulestari.smartbayu',
   );
 }

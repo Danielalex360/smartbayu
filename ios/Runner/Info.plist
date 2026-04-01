@@ -45,5 +45,22 @@
 	<true/>
 	<key>UIApplicationSupportsIndirectInputEvents</key>
 	<true/>
+	<key>NSCameraUsageDescription</key>
+	<string>SmartBayu needs camera access for face verification during check-in and check-out.</string>
+	<key>NSLocationWhenInUseUsageDescription</key>
+	<string>SmartBayu needs your location to verify you are at the work site for attendance.</string>
+	<key>NSLocationAlwaysAndWhenInUseUsageDescription</key>
+	<string>SmartBayu needs background location access to verify geofence for attendance.</string>
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>SmartBayu needs photo library access to upload receipts and profile photos.</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>SmartBayu may need microphone access for camera functionality.</string>
+	<key>UIBackgroundModes</key>
+	<array>
+		<string>fetch</string>
+		<string>remote-notification</string>
+	</array>
+	<key>FirebaseAppDelegateProxyEnabled</key>
+	<false/>
 </dict>
 </plist>

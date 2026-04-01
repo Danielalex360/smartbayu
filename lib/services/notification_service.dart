@@ -6,7 +6,6 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
-import 'package:http/http.dart' as http;
 
 /// NotificationService V3
 /// - Handle FCM + Local Popup Notification
@@ -30,9 +29,9 @@ class NotificationService {
   bool _initialized = false;
   BuildContext? _rootContext;
 
-  /// Tukar kepada Server Key FCM Kau
-  static const String _fcmServerKey = 'YOUR_FCM_SERVER_KEY_HERE';
-  static const String _fcmUrl = 'https://fcm.googleapis.com/fcm/send';
+  // FCM push via Firestore-based notifications (no legacy server key needed).
+  // Direct FCM v1 API calls should be done server-side (Cloud Functions),
+  // not from the client app. The Firestore listener handles real-time popups.
 
   StreamSubscription<QuerySnapshot<Map<String, dynamic>>>?
   _userNotificationListener;
@@ -82,71 +81,40 @@ class NotificationService {
   }
 
   // ================================================================
-  // SEND FCM API (Optional – kalau nanti guna token)
+  // SEND NOTIFICATION VIA FIRESTORE (triggers real-time listener)
   // ================================================================
-  Future<void> sendToToken({
-    required String token,
+  /// Sends a notification to a specific user via Firestore.
+  /// The real-time listener on the target user's device will pick it up
+  /// and show a local popup automatically.
+  Future<void> sendToUser({
+    required String userId,
     required String title,
     required String body,
-    Map<String, String>? data,
-  }) async {
-    if (_fcmServerKey == 'YOUR_FCM_SERVER_KEY_HERE') {
-      debugPrint('⚠ MISSING FCM SERVER KEY');
-      return;
-    }
-
-    final payload = {
-      'to': token,
-      'notification': {'title': title, 'body': body, 'sound': 'default'},
-      'data': data ?? {},
-    };
-
-    try {
-      final res = await http.post(
-        Uri.parse(_fcmUrl),
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': 'key=$_fcmServerKey',
-        },
-        body: jsonEncode(payload),
-      );
-
-      if (res.statusCode != 200) {
-        debugPrint('❌ Send Error: ${res.statusCode} - ${res.body}');
-      }
-    } catch (e) {
-      debugPrint('❌ FCM Exception: $e');
-    }
-  }
-
-  Future<void> sendToMultiple({
-    required List<String> tokens,
-    required String title,
-    required String body,
-    Map<String, String>? data,
-  }) async {
-    for (final t in tokens) {
-      await sendToToken(token: t, title: title, body: body, data: data);
-    }
-  }
-
-  Future<void> sendSmartBayuEvent({
-    required List<String> targetTokens,
-    required String title,
-    required String body,
-    required String type, // leave | claim | payslip | attendance
+    required String type,
     String? docId,
   }) async {
-    await sendToMultiple(
-      tokens: targetTokens,
-      title: title,
-      body: body,
-      data: {
-        'type': type,
-        'screen': type,
-        if (docId != null) 'docId': docId,
-      },
-    );
+    await FirebaseFirestore.instance.collection('notifications').add({
+      'userId': userId,
+      'title': title,
+      'message': body,
+      'type': type,
+      if (docId != null) 'docId': docId,
+      'isRead': false,
+      'createdAt': FieldValue.serverTimestamp(),
+    });
+  }
+
+  /// Send notification to multiple users
+  Future<void> sendToMultipleUsers({
+    required List<String> userIds,
+    required String title,
+    required String body,
+    required String type,
+    String? docId,
+  }) async {
+    for (final uid in userIds) {
+      await sendToUser(userId: uid, title: title, body: body, type: type, docId: docId);
+    }
   }
 
   // ================================================================
@@ -183,20 +151,11 @@ class NotificationService {
   // TAP ROUTE HANDLER
   // ================================================================
   void _handleNavigationFromData(Map<String, dynamic> data) {
-    final ctx = _rootContext;
-    if (ctx == null) return;
-
+    // Navigation is handled by the notification page itself when tapped.
+    // FCM background/terminated taps land here but the app opens to home
+    // which is the correct behaviour for now.
     final type = (data['type'] ?? data['screen'] ?? '') as String;
-
-    if (type == 'leave') {
-      // Navigator.pushNamed(ctx, '/myLeave');
-    } else if (type == 'claim') {
-      // Navigator.pushNamed(ctx, '/myClaims');
-    } else if (type == 'payslip') {
-      // Navigator.pushNamed(ctx, '/payslip');
-    } else if (type == 'attendance') {
-      // Navigator.pushNamed(ctx, '/attendance');
-    }
+    debugPrint('🔔 Notification tapped: type=$type');
   }
 
   // ================================================================
